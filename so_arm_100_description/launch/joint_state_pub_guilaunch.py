@@ -8,8 +8,8 @@ import os
 
 def get_robot_description(context, *args, **kwargs):
     dof = LaunchConfiguration('dof').perform(context)
-    pkg_share = FindPackageShare('so_100_arm').find('so_100_arm')
-    urdf_path = os.path.join(pkg_share, 'urdf', f'so_100_arm_{dof}dof.urdf')
+    pkg_share = FindPackageShare('so_arm_100_moveit_config').find('so_arm_100_moveit_config')
+    urdf_path = os.path.join(pkg_share, 'urdf', f'so_arm_100_{dof}dof.urdf')
     rviz_path = os.path.join(pkg_share, 'config', 'urdf.rviz')
     
     robot_description = ParameterValue(

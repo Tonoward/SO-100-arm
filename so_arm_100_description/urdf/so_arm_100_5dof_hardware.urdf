@@ -2,7 +2,7 @@
 <!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
      Commit Version: 1.6.0-1-g15f4949  Build Version: 1.6.7594.29634
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
-<robot name="so_100_arm">
+<robot name="so_arm_100">
 
   <!-- <link name="world"/>
 
@@ -43,7 +43,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Base.STL" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Base.STL" />
       </geometry>
       <material
         name="">
@@ -57,7 +57,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Base.STL" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Base.STL" />
       </geometry>
     </collision>
   </link>
@@ -84,7 +84,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Shoulder_Rotation_Pitch.STL" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Shoulder_Rotation_Pitch.STL" />
       </geometry>
       <material
         name="">
@@ -98,7 +98,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Shoulder_Rotation_Pitch.STL" scale="0.9 0.9 0.9" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Shoulder_Rotation_Pitch.STL" scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -137,7 +137,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Upper_Arm.STL" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Upper_Arm.STL" />
       </geometry>
       <material
         name="">
@@ -151,7 +151,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Upper_Arm.STL" scale="0.9 0.9 0.9" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Upper_Arm.STL" scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -190,7 +190,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Lower_Arm.STL" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Lower_Arm.STL" />
       </geometry>
       <material
         name="">
@@ -204,7 +204,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Lower_Arm.STL" scale="0.9 0.9 0.9" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Lower_Arm.STL" scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -243,7 +243,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Wrist_Pitch_Roll.STL" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Wrist_Pitch_Roll.STL" />
       </geometry>
       <material
         name="">
@@ -257,7 +257,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Wrist_Pitch_Roll.STL" scale="0.9 0.9 0.9" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Wrist_Pitch_Roll.STL" scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -296,7 +296,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Fixed_Gripper.STL" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Fixed_Gripper.STL" />
       </geometry>
       <material
         name="">
@@ -310,7 +310,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Fixed_Gripper.STL" scale="0.9 0.9 0.9" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Fixed_Gripper.STL" scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -349,7 +349,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Moving_Jaw.STL" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Moving_Jaw.STL" />
       </geometry>
       <material
         name="">
@@ -363,7 +363,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="file://$(find so_100_arm)/models/so_100_arm_5dof/meshes/Moving_Jaw.STL" scale="0.9 0.9 0.9" />
+          filename="file://$(find so_arm_100_moveit_config)/models/so_arm_100_5dof/meshes/Moving_Jaw.STL" scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
