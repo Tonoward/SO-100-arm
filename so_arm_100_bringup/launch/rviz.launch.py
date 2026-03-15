@@ -1,32 +1,30 @@
+import os
+import xacro
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.substitutions import Command, LaunchConfiguration
+from launch.actions import DeclareLaunchArgument
+from launch.actions import OpaqueFunction
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
-from launch_ros.substitutions import FindPackageShare
-import os
 
 def get_robot_description(context, *args, **kwargs):
-    dof = LaunchConfiguration('dof').perform(context)
-    pkg_share = FindPackageShare('so_arm_100_moveit_config').find('so_arm_100_moveit_config')
-    urdf_path = os.path.join(pkg_share, 'urdf', f'so_arm_100_{dof}dof.urdf')
-    rviz_path = os.path.join(pkg_share, 'config', 'urdf.rviz')
-    
-    robot_description = ParameterValue(
-        Command(['xacro ', urdf_path]),
-        value_type=str
+    so_arm_100_description_path = os.path.join(
+        get_package_share_directory('so_arm_100_description')
+    )
+
+    rviz_config_file = os.path.join(
+        so_arm_100_description_path,
+        'rviz',
+        'so_arm_100.rviz'
     )
     
-    return {'urdf_path': urdf_path, 'rviz_path': rviz_path, 'robot_description': robot_description}
+    return {
+        'rviz_config_file': rviz_config_file,
+    }
 
 def generate_launch_description():
-    # Declare the DOF argument
-    dof_arg = DeclareLaunchArgument(
-        'dof',
-        default_value='5',
-        description='DOF configuration - either 5 or 7'
-    )
-
     def launch_setup(context, *args, **kwargs):
         params = get_robot_description(context)
         
@@ -35,12 +33,11 @@ def generate_launch_description():
                 package='rviz2',
                 executable='rviz2',
                 name='rviz2',
-                arguments=['-d', params['rviz_path']]
+                arguments=['-d', params['rviz_config_file']]
             )
         ]
         return nodes
 
     return LaunchDescription([
-        dof_arg,
         OpaqueFunction(function=launch_setup)
-    ]) 
+    ])

@@ -25,6 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'so_arm_100_5dof_cmd_relay = so_arm_100_bringup.so_arm_100_5dof_cmd_relay:main',
         ],
     },
 )
