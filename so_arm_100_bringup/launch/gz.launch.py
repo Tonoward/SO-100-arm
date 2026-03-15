@@ -10,15 +10,15 @@ import os
 
 def get_robot_description(context, *args, **kwargs):
     dof = LaunchConfiguration('dof').perform(context)
-    pkg_share = FindPackageShare('so_100_arm').find('so_100_arm')
-    urdf_path = os.path.join(pkg_share, 'urdf', f'so_100_arm_{dof}dof.urdf')
+    pkg_share = FindPackageShare('so_arm_100_moveit_config').find('so_arm_100_moveit_config')
+    urdf_path = os.path.join(pkg_share, 'urdf', f'so_arm_100_{dof}dof.urdf')
     controller_path = os.path.join(pkg_share, 'config', f'controllers_{dof}dof.yaml')
     
     with open(urdf_path, 'r') as file:
         urdf_content = file.read()
         # Convert package:// to model:// for Gazebo
-        replace_str = f'package://so_100_arm/models/so_100_arm_{dof}dof/meshes'
-        with_str = f'model://so_100_arm_{dof}dof/meshes'
+        replace_str = f'package://so_arm_100_moveit_config/models/so_arm_100_{dof}dof/meshes'
+        with_str = f'model://so_arm_100_{dof}dof/meshes'
         gazebo_urdf_content = urdf_content.replace(replace_str, with_str)
         return {
             'robot_description': ParameterValue(urdf_content, value_type=str),
@@ -34,7 +34,7 @@ def generate_launch_description():
         description='DOF configuration - either 5 or 7'
     )
 
-    pkg_share = FindPackageShare('so_100_arm').find('so_100_arm')
+    pkg_share = FindPackageShare('so_arm_100_moveit_config').find('so_arm_100_moveit_config')
     model_path = os.path.join(os.path.dirname(os.path.dirname(pkg_share)), 'models')
 
     # Set the package path for Gazebo
@@ -52,7 +52,7 @@ def generate_launch_description():
             name='spawn_model',
             arguments=[
                 '-string', descriptions['gazebo_description'].value,
-                '-name', 'so_100_arm',
+                '-name', 'so_arm_100',
                 '-allow_renaming', 'true',
                 '-x', '0',
                 '-y', '0',

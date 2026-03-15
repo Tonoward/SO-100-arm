@@ -27,7 +27,7 @@ def generate_launch_description():
             [
                 FindExecutable(name='xacro'), ' ',
                 PathJoinSubstitution(
-                    [FindPackageShare('so_100_arm'), 'config', 'so_100_arm.urdf.xacro']
+                    [FindPackageShare('so_arm_100_moveit_config'), 'config', 'so_arm_100.urdf.xacro']
                 ),
                 ' ',
                 'use_fake_hardware:=false'
@@ -51,7 +51,7 @@ def generate_launch_description():
         parameters=[
             robot_description,
             PathJoinSubstitution(
-                [FindPackageShare('so_100_arm'), 'config', 'controllers.yaml']
+                [FindPackageShare('so_arm_100_moveit_config'), 'config', 'controllers.yaml']
             ),
         ],
         output="screen",
@@ -114,7 +114,7 @@ def generate_launch_description():
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        arguments=['-d', PathJoinSubstitution([FindPackageShare('so_100_arm'), 'config', 'urdf.rviz'])]
+        arguments=['-d', PathJoinSubstitution([FindPackageShare('so_arm_100_moveit_config'), 'config', 'urdf.rviz'])]
     )
 
     # Add zero pose test node
