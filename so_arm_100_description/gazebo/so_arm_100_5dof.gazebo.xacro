@@ -8,7 +8,7 @@
       use_topic_hardware_interface: true if using topic based control
   -->
 
-  <gazebo>    
+  <gazebo>
     <plugin name="gz::sim::systems::JointStatePublisher"
       filename="gz-sim-joint-state-publisher-system">
     </plugin>
@@ -38,7 +38,7 @@
     
       <plugin filename="gz_ros2_control-system"
           name="gz_ros2_control::GazeboSimROS2ControlPlugin">
-        <parameters>$(arg ros2_controllers_file)</parameters>
+        <parameters>${ros2_controllers_file}</parameters>
         <robot_param>robot_description</robot_param>
         <robot_param_node>robot_state_publisher</robot_param_node>
       </plugin>
