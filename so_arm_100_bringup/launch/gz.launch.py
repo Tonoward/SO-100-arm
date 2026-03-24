@@ -215,9 +215,9 @@ def generate_launch_description():
                 'qos_overrides./tf_static.publisher.durability': 'transient_local',
             }],
             arguments=[
-                '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
-                '/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
-                '/tf_static@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
+                '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+                '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
+                '/tf_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             ],
         )
 
