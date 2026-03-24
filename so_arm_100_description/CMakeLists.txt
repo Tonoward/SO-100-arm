@@ -17,24 +17,11 @@ endif()
 # Find ament packages and libraries for ament and system dependencies
 ################################################################################
 find_package(ament_cmake REQUIRED)
-find_package(xacro REQUIRED)
-
-################################################################################
-# Process xacro (§10 https://wiki.ros.org/xacro)
-################################################################################
-file(GLOB xacro_files
-    ${CMAKE_CURRENT_SOURCE_DIR}/urdf/so_arm_100_5dof_hardware.urdf.xacro)
-xacro_add_files(${xacro_files} TARGET urdf_files)
 
 ################################################################################
 # Install
 ################################################################################
 install(DIRECTORY gazebo launch models ros2_control rviz urdf
-  DESTINATION share/${PROJECT_NAME}
-)
-
-install(FILES 
-  ${urdf_files}
   DESTINATION share/${PROJECT_NAME}
 )
 
