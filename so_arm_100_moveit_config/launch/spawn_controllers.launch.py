@@ -5,7 +5,7 @@ from moveit_configs_utils import MoveItConfigsBuilder
 
 def generate_launch_description():
     moveit_config = MoveItConfigsBuilder(
-        "so_100_arm", package_name="so_arm_100_moveit_config"
+        "so_arm_100", package_name="so_arm_100_moveit_config"
     ).to_moveit_configs()
 
     controller_mgr = moveit_config.trajectory_execution.get(
