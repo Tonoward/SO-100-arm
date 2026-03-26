@@ -14,6 +14,7 @@ from launch.actions import SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.conditions import UnlessCondition
 from launch.event_handlers import OnProcessExit
+from launch.event_handlers import OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -300,9 +301,9 @@ def generate_launch_description():
                 )
             ),
             RegisterEventHandler(
-                event_handler=OnProcessExit(
-                    target_action=spawn_robot,
-                    on_exit=[joint_state_broadcaster_spawner]
+                event_handler=OnProcessStart(
+                    target_action=ros2_control_node,
+                    on_start=[joint_state_broadcaster_spawner]
                 )
             ),
             RegisterEventHandler(
