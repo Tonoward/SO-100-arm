@@ -86,7 +86,7 @@
         <joint_name>${prefix}Wrist_Pitch</joint_name>
         <!-- <topic>/model/so_arm_100/joint/${prefix}Wrist_Pitch/0/cmd_pos</topic> -->
         <p_gain>5.0</p_gain>
-        <i_gain>0.0</i_gain>
+        <i_gain>0.5</i_gain>
         <d_gain>0.1</d_gain>
         <i_max>1</i_max>
         <i_min>-1</i_min>
