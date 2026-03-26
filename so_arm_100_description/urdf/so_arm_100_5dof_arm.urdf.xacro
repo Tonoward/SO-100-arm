@@ -61,7 +61,8 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="${meshes_file_directory}/Base.STL" />
+          filename="${meshes_file_directory}/Base.STL"
+          scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -99,7 +100,8 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="${meshes_file_directory}/Shoulder_Rotation_Pitch.STL" />
+          filename="${meshes_file_directory}/Shoulder_Rotation_Pitch.STL"
+          scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -150,7 +152,8 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="${meshes_file_directory}/Upper_Arm.STL" />
+          filename="${meshes_file_directory}/Upper_Arm.STL"
+          scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -201,7 +204,8 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="${meshes_file_directory}/Lower_Arm.STL" />
+          filename="${meshes_file_directory}/Lower_Arm.STL"
+          scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -252,7 +256,8 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="${meshes_file_directory}/Wrist_Pitch_Roll.STL" />
+          filename="${meshes_file_directory}/Wrist_Pitch_Roll.STL"
+          scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -303,7 +308,8 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="${meshes_file_directory}/Fixed_Gripper.STL" />
+          filename="${meshes_file_directory}/Fixed_Gripper.STL"
+          scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
@@ -354,7 +360,8 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="${meshes_file_directory}/Moving_Jaw.STL" />
+          filename="${meshes_file_directory}/Moving_Jaw.STL"
+          scale="0.9 0.9 0.9" />
       </geometry>
     </collision>
   </link>
