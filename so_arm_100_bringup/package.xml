@@ -6,6 +6,7 @@
   <description>SO-100 bringup ROS 2 package.</description>
 
   <maintainer email="bruk@signalbotics.com">Bruk Gebregziabher</maintainer>
+  <maintainer email="rhys.mainwaring@me.com">Rhys Mainwaring</maintainer>
   <license>Apache 2.0</license>
   <url type="repository">https://github.com/brukg/SO-100-arm</url>
 

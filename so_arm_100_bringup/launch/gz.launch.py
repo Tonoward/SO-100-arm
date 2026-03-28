@@ -153,6 +153,7 @@ def generate_launch_description():
         dof = LaunchConfiguration('dof').perform(context)
         prefix = LaunchConfiguration('prefix').perform(context)
         world_name = LaunchConfiguration('world').perform(context)
+        use_topic = LaunchConfiguration('use_topic_hardware_interface').perform(context) == 'true'
         model_name = 'so_arm_100'
 
         descriptions = get_robot_description(context)
@@ -293,19 +294,41 @@ def generate_launch_description():
             robot_state_publisher,
             gazebo,
             spawn_robot,
+            gz_ros2_control_bridge,
+            topic_based_control_bridge,
+            command_relay,
+        ]
 
-            RegisterEventHandler(
-                event_handler=OnProcessExit(
-                    target_action=spawn_robot,
-                    on_exit=[ros2_control_node]
+        if use_topic:
+            # Topic-based control: start ros2_control_node after spawn,
+            # then spawn controllers after it starts
+            nodes += [
+                RegisterEventHandler(
+                    event_handler=OnProcessExit(
+                        target_action=spawn_robot,
+                        on_exit=[ros2_control_node]
+                    )
+                ),
+                RegisterEventHandler(
+                    event_handler=OnProcessStart(
+                        target_action=ros2_control_node,
+                        on_start=[joint_state_broadcaster_spawner]
+                    )
+                ),
+            ]
+        else:
+            # gz_ros2_control path: spawn controllers after robot is spawned
+            nodes.append(
+                RegisterEventHandler(
+                    event_handler=OnProcessExit(
+                        target_action=spawn_robot,
+                        on_exit=[joint_state_broadcaster_spawner]
+                    )
                 )
-            ),
-            RegisterEventHandler(
-                event_handler=OnProcessStart(
-                    target_action=ros2_control_node,
-                    on_start=[joint_state_broadcaster_spawner]
-                )
-            ),
+            )
+
+        # Common controller spawning chain
+        nodes += [
             RegisterEventHandler(
                 event_handler=OnProcessExit(
                     target_action=joint_state_broadcaster_spawner,
@@ -318,9 +341,6 @@ def generate_launch_description():
                     on_exit=[gripper_controller_spawner]
                 )
             ),
-            gz_ros2_control_bridge,
-            topic_based_control_bridge,
-            command_relay,
         ]
         return nodes
 
