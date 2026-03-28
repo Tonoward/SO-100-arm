@@ -69,7 +69,7 @@ rosdep install --from-paths src --ignore-src -r -y
 ### Build the package
 
 ```bash
-colcon build --packages-select so_100_arm
+colcon build --packages-select so_arm_100
 source install/setup.bash
 ```
 
@@ -79,7 +79,7 @@ source install/setup.bash
 
 ```bash
 ## Launch the hardware interface
-ros2 launch so_100_arm hardware.launch.py
+ros2 launch so_arm_100 hardware.launch.py
 ```
 
 ### Test Servo Communication
@@ -153,19 +153,19 @@ Note: Ensure the arm has clear space to move before sending commands.
 ### Launch the robot in Gazebo
 
 ```bash
-ros2 launch so_100_arm gz.launch.py dof:5
+ros2 launch so_arm_100 gz.launch.py dof:5
 ```
 
 ### Launch the robot in RVIZ
 
 ```bash
-ros2 launch so_100_arm rviz.launch.py
+ros2 launch so_arm_100 rviz.launch.py
 ```
 
 ### Launch MoveIt2 Demo
 
 ```bash
-ros2 launch so_100_arm demo.launch.py
+ros2 launch so_arm_100 demo.launch.py
 ```
 
 ### Test Joint Movement
@@ -174,7 +174,7 @@ ros2 launch so_100_arm demo.launch.py
 #### Send a test position command for 5dof arm
 
 ```bash
-ros2 topic pub /joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory '{joint_names: ["Shoulder_Rotation", "Shoulder_Pitch", "Elbow", "Wrist_Roll", "Wrist_Pitch"], points: [{positions: [1.0, 1.0, 1.0, 1.0, 1.0], velocities: [], accelerations: [], effort: [], time_from_start: {sec: 1, nanosec: 0}}]}'
+ros2 topic pub /arm_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory '{joint_names: ["Shoulder_Rotation", "Shoulder_Pitch", "Elbow", "Wrist_Roll", "Wrist_Pitch"], points: [{positions: [1.0, 1.0, 1.0, 1.0, 1.0], velocities: [], accelerations: [], effort: [], time_from_start: {sec: 1, nanosec: 0}}]}'
 ```
 
 ### Test Gripper Control
@@ -215,7 +215,7 @@ The video above shows the SO-100 robot arm in Gazebo Harmonic simulation:
 ## Package Structure
 
 ```bash
-so_100_arm/
+so_arm_100/
 ├── CMakeLists.txt                      # Build system configuration
 ├── config/  
 │   ├── controllers_5dof.yaml           # 5DOF joint controller configuration
@@ -227,9 +227,9 @@ so_100_arm/
 │   ├── pilz_cartesian_limits.yaml      # Cartesian planning limits
 │   ├── ros2_controllers.yaml           # ROS2 controller settings
 │   ├── sensors_3d.yaml                 # Sensor configuration
-│   ├── so_100_arm.ros2_control.xacro   # ROS2 Control macro
-│   ├── so_100_arm.srdf                 # Semantic robot description
-│   ├── so_100_arm.urdf.xacro          # Main robot description macro
+│   ├── so_arm_100.ros2_control.xacro   # ROS2 Control macro
+│   ├── so_arm_100.srdf                 # Semantic robot description
+│   ├── so_arm_100.urdf.xacro           # Main robot description macro
 │   └── urdf.rviz                       # RViz configuration for URDF
 ├── launch/  
 │   ├── demo.launch.py                  # MoveIt demo with RViz
@@ -239,19 +239,19 @@ so_100_arm/
 │   ├── rsp.launch.py                   # Robot state publisher
 │   ├── rviz.launch.py                  # Basic RViz visualization
 │   ├── setup_assistant.launch.py       # MoveIt Setup Assistant
-│   ├── spawn_controllers.launch.py      # Controller spawning
+│   ├── spawn_controllers.launch.py     # Controller spawning
 │   ├── static_virtual_joint_tfs.launch.py
 │   └── warehouse_db.launch.py          # MoveIt warehouse database
 ├── LICENSE
 ├── models/
-│   ├── so_100_arm_5dof/               # 5DOF robot assets
-│   │   ├── meshes/                    # STL files for visualization
-│   │   └── model.config               # Model metadata
+│   ├── so_arm_100_5dof/                # 5DOF robot assets
+│   │   ├── meshes/                     # STL files for visualization
+│   │   └── model.config                # Model metadata
 ├── package.xml                         # Package metadata and dependencies
 ├── README.md                           # This documentation
 └── urdf/
-    ├── so_100_arm_5dof.csv            # Joint configuration data
-    ├── so_100_arm_5dof.urdf           # 5DOF robot description
+    ├── so_arm_100_5dof.csv             # Joint configuration data
+    ├── so_arm_100_5dof.urdf            # 5DOF robot description
 
 ```
 
