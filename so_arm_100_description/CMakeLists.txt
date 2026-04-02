@@ -26,6 +26,13 @@ install(DIRECTORY gazebo launch models ros2_control rviz urdf
 )
 
 ################################################################################
+# Environment hooks
+################################################################################
+
+ament_environment_hooks("${CMAKE_CURRENT_SOURCE_DIR}/hooks/${PROJECT_NAME}.dsv.in")
+ament_environment_hooks("${CMAKE_CURRENT_SOURCE_DIR}/hooks/${PROJECT_NAME}.sh.in")
+
+################################################################################
 # Macro for ament package
 ################################################################################
 ament_package()
