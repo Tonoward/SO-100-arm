@@ -53,10 +53,10 @@ class SOARM1005DofCommandRelay(Node):
         for i, name in enumerate(msg.name):
             if name in self.pubs:
                 cmd = Float64()
-                if not math.isnan(msg.position[i]):
+                if msg.position and not math.isnan(msg.position[i]):
                     # position command
                     cmd.data = msg.position[i]
-                elif not math.isnan(msg.velocity[i]):
+                elif msg.velocity and not math.isnan(msg.velocity[i]):
                     # velocity command
                     cmd.data = msg.velocity[i]
                 self.pubs[name].publish(cmd)
