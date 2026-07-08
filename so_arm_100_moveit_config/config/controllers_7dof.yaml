@@ -33,4 +33,4 @@ arm_controller:
       joint_trajectory_controller:
         joint1:
           trajectory: 0.05
-          goal: 0.03
+          goal: 0.01

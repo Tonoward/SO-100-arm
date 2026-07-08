@@ -22,10 +22,16 @@ def generate_launch_description():
         get_package_share_directory('so_arm_100_moveit_config')
     )
 
+    # Default calibration ships with the vendored so_arm_100_hardware package.
+    default_calibration_file = os.path.join(
+        get_package_share_directory('so_arm_100_hardware'),
+        'config', 'calibration.yaml'
+    )
+
     arguments = LaunchDescription([
         DeclareLaunchArgument(
             'serial_port',
-            default_value='/dev/ttyUSB0',
+            default_value='/dev/serial/by-id/usb-1a86_USB_Single_Serial_5970073059-if00',
             description='Servo controller board serial port'
         ),
         DeclareLaunchArgument(
@@ -54,6 +60,11 @@ def generate_launch_description():
             description='Use fake hardware'
         ),
         DeclareLaunchArgument(
+            'calibration_file',
+            default_value=default_calibration_file,
+            description='Path to joint calibration YAML (defaults to the packaged calibration.yaml; pass "" to use raw servo defaults)'
+        ),
+        DeclareLaunchArgument(
             'zero_pose',
             default_value='false',
             description='Test zero pose after startup'
@@ -74,10 +85,12 @@ def generate_launch_description():
         serial_baudrate = LaunchConfiguration('serial_baudrate').perform(context)
         servo_speed = LaunchConfiguration('servo_speed').perform(context)
         servo_acceleration = LaunchConfiguration('servo_acceleration').perform(context)
+        calibration_file = LaunchConfiguration('calibration_file').perform(context)
 
         doc = xacro.process_file(xacro_file, mappings={
             'use_fake_hardware': use_fake_hardware,
             'serial_port': serial_port,
+            'calibration_file': calibration_file,
             'serial_baudrate': serial_baudrate,
             'servo_speed': servo_speed,
             'servo_acceleration': servo_acceleration,

@@ -8,7 +8,7 @@
       use_sim:=^|false
       use_topic_hardware_interface:=^|false
       use_fake_hardware:=^|false
-      serial_port:=^|/dev/ttyUSB0
+      serial_port:=^|/dev/serial/by-id/usb-1a86_USB_Single_Serial_5970073059-if00
       serial_baudrate:=^|1000000
       servo_speed:=^|2400
       servo_acceleration:=^|50">

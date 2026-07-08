@@ -37,6 +37,24 @@ arm_controller:
       - velocity
     allow_nonzero_velocity_at_trajectory_end: true
     allow_partial_joints_goal: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 2.0          # seconds after trajectory end to reach goal; raise if arm needs more settling time
+      Shoulder_Rotation:
+        goal: 0.05            # ~3 deg; tighten toward 0.01 once the arm reliably hits targets
+        trajectory: 0.15
+      Shoulder_Pitch:
+        goal: 0.05
+        trajectory: 0.15
+      Elbow:
+        goal: 0.05
+        trajectory: 0.15
+      Wrist_Pitch:
+        goal: 0.05
+        trajectory: 0.15
+      Wrist_Roll:
+        goal: 0.05
+        trajectory: 0.15
 
 gripper_controller:
   ros__parameters:

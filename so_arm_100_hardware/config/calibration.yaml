@@ -1,0 +1,52 @@
+# SO-ARM-100 servo calibration
+# zero_ticks measured directly from test_servo at the home position (all joints = 0 rad).
+#
+# zero_ticks : raw servo tick (0-4095) that corresponds to 0 rad in the URDF.
+# direction  : +1 = increasing ticks → increasing joint angle.
+#              -1 = servo is mounted inverted (increasing ticks → decreasing angle).
+#
+# gravity_coefficient : feedforward correction added to the position command each cycle.
+#   Applied as:  corrected_cmd = commanded_angle + gravity_coefficient * sin(current_angle)
+#   Positive value → pushes the joint in the positive direction to fight gravity sag.
+#   Start at 0.0 and increase in 0.05 steps while watching the arm at ~0.5 rad extension.
+#   Stop when the physical arm tracks the RViz goal marker in extended poses.
+#   If the arm overcorrects (swings past the goal), reduce the coefficient.
+#
+# ZERO_TICKS CHECK: after launching with this file, run:
+#   ros2 topic echo /joint_states
+#   All joints should read ~0 rad at home. If joint X reads Y rad, fix it:
+#   zero_ticks += direction * round(Y * 4096 / (2*pi))
+#
+# DIRECTION CHECK: command a small positive angle via MoveIt and watch the physical joint.
+#   If it moves the wrong way, flip direction between +1 and -1.
+
+joints:
+  Shoulder_Rotation:
+    zero_ticks: 2053    # servo 1 position at home
+    direction: 1
+    gravity_coefficient: 0.0
+
+  Shoulder_Pitch:
+    zero_ticks: 914     # servo 2 position at home
+    direction: 1
+    gravity_coefficient: 0.0   # try 0.1 first if arm droops forward when extended
+
+  Elbow:
+    zero_ticks: 3028    # servo 3 position at home
+    direction: -1       # inverted mounting
+    gravity_coefficient: 0.1   # try 0.1 first if elbow droops when arm is extended
+
+  Wrist_Pitch:
+    zero_ticks: 2859    # servo 4 position at home
+    direction: -1       # inverted mounting
+    gravity_coefficient: 0.0
+
+  Wrist_Roll:
+    zero_ticks: 3063    # servo 5 position at home (old value 213 caused abrupt movement)
+    direction: 1
+    gravity_coefficient: 0.0
+
+  Gripper:
+    zero_ticks: 1889    # servo 6 position at home
+    direction: 1
+    gravity_coefficient: 0.0

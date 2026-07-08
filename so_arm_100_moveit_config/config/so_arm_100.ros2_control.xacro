@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-    <xacro:macro name="so_arm_100_ros2_control" params="name initial_positions_file use_fake_hardware serial_port:=^|/dev/ttyUSB0 serial_baudrate:=^|1000000 servo_speed:=^|2400 servo_acceleration:=^|50" >
+    <xacro:macro name="so_arm_100_ros2_control" params="name initial_positions_file use_fake_hardware serial_port:=^|/dev/serial/by-id/usb-1a86_USB_Single_Serial_5970073059-if00 serial_baudrate:=^|1000000 servo_speed:=^|2400 servo_acceleration:=^|50 calibration_file:=^|''" >
         <xacro:property name="initial_positions" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
 
         <ros2_control name="${name}" type="system">
@@ -15,6 +15,9 @@
                     <param name="serial_baudrate">${serial_baudrate}</param>
                     <param name="servo_speed">${servo_speed}</param>
                     <param name="servo_acceleration">${servo_acceleration}</param>
+                    <xacro:if value="${calibration_file != ''}">
+                      <param name="calibration_file">${calibration_file}</param>
+                    </xacro:if>
                 </xacro:unless>
             </hardware>
             <joint name="Shoulder_Rotation">

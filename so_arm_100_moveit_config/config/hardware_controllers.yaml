@@ -40,11 +40,22 @@ arm_controller:
     hold_position_on_startup: true
     constraints:
       stopped_velocity_tolerance: 0.01
-      goal_time: 0.0
-      joint_trajectory_controller:
-        joint1:
-          trajectory: 0.05
-          goal: 0.03
+      goal_time: 5.0
+      Shoulder_Rotation:
+        goal: 0.05
+        trajectory: 0.15
+      Shoulder_Pitch:
+        goal: 0.05
+        trajectory: 0.15
+      Elbow:
+        goal: 0.05
+        trajectory: 0.15
+      Wrist_Pitch:
+        goal: 0.05
+        trajectory: 0.15
+      Wrist_Roll:
+        goal: 0.05
+        trajectory: 0.15
 
 gripper_controller:
   ros__parameters:

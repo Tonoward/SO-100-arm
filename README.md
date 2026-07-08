@@ -1,294 +1,260 @@
-# SO-100 Robot Arm ROS2 Package
+# SO-100 Robot Arm — ROS2 (Tonoward fork)
 
-This package provides ROS2 support for the SO-100 robot arm, available in 5-DOF configuration. It is based on the open-source 3D printable [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) project by The Robot Studio. This implementation includes URDF models, Gazebo simulation support, and MoveIt2 integration.
+ROS2 support for the SO-100 5-DOF robot arm with Feetech STS3215 smart servos.
+Based on [brukg/SO-100-arm](https://github.com/brukg/SO-100-arm), which in turn
+builds on the 3D-printable [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)
+project by The Robot Studio.
 
-The original ROS1 implementation can be found at: https://github.com/TheRobotStudio/SO-ARM100
+## What this fork changes
 
-## Features
+This fork is a **self-contained source of truth** — no build-time patching.
 
-- Robot arm URDF models
-  - 5-DOF configuration with gripper
-- Gazebo Harmonic simulation support
-- ROS2 Control integration
-  - Joint trajectory controller
-  - Gripper action controller
-- MoveIt2 motion planning capabilities (In Progress)
-  - Basic configuration generated
-  - Integration with Gazebo pending
-  - Motion planning testing pending
+- **Vendored hardware driver.** The `so_arm_100_hardware` package (originally a
+  separate repo, `brukg/so_arm_100_hardware`) now lives inside this repo. Its
+  source targets the **ROS2 Humble** `ros2_control` API directly (no compat
+  patch needed at build time).
+- **Serial port baked in.** The arm's udev by-id path
+  (`/dev/serial/by-id/usb-1a86_USB_Single_Serial_5970073059-if00`) is the
+  default everywhere. Override with `serial_port:=...` if your device differs.
+- **Servo calibration.** `so_arm_100_hardware/config/calibration.yaml` maps each
+  servo's raw ticks to joint radians (`zero_ticks` + `direction`) and is loaded
+  by default at launch. See [Calibration](#calibration).
+- **Gravity compensation.** Optional per-joint feedforward to counter droop when
+  the arm is extended. See [Gravity compensation](#gravity-compensation).
+- **Strict controller tolerances.** The `joint_trajectory_controller` now has
+  real `goal`/`trajectory` constraints, so a move that misses its target is
+  reported as `ABORTED` instead of a false `SUCCEEDED`.
 
 ## Prerequisites
 
-### ROS2 and Dependencies
-
 - ROS2 Humble
-- Gazebo Garden
-- MoveIt2
-- ros2_control
-- gz_ros2_control
+- MoveIt2, ros2_control
+- (Simulation only) Gazebo + gz_ros2_control
 
-### Hardware Requirements
+### Hardware
 
-For using the physical robot:
-
-- SO-ARM-100 robot arm (5-DOF)
-- Feetech SMS/STS series servos
-- USB-to-Serial converter (CH340 chip)
-- so_arm_100_hardware package installed:
-
-  ```bash
-  cd ~/ros2_ws/src
-  git clone git@github.com:brukg/so_arm_100_hardware.git
-  cd ~/ros2_ws
-  colcon build --packages-select so_arm_100_hardware
-  source install/setup.bash
-  ```
+- SO-ARM-100 arm (5-DOF) with Feetech SMS/STS series servos
+- USB-to-serial adapter (CH340 / `1a86:` VID)
 
 ## Installation
-
-### Create a ROS2 workspace (if you don't have one)
 
 ```bash
 mkdir -p ~/ros2_ws/src
 cd ~/ros2_ws/src
+git clone https://github.com/Tonoward/SO-100-arm.git
 ```
 
-### Clone the repository
-
-```bash
-git clone git@github.com:brukg/SO-100-arm.git
-```
-
-### Install dependencies
+That single clone brings in every package, including the vendored
+`so_arm_100_hardware`. Install ROS dependencies:
 
 ```bash
 cd ~/ros2_ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
-### Build the package
+## Building
+
+Use the helper script (fixes serial permissions, sources ROS, builds up to
+`so_arm_100`):
 
 ```bash
-colcon build --packages-select so_arm_100
+cd ~/ros2_ws
+./build_so_arm_100.sh
+```
+
+The script edits `SERIAL_PORT` at the top if your device path differs. It runs
+`sudo chmod 666` on the serial device, so it will prompt for your password.
+
+Plain colcon works too:
+
+```bash
+cd ~/ros2_ws
+colcon build --packages-up-to so_arm_100
 source install/setup.bash
 ```
 
 ## Usage
 
-### Launch the Hardware Interface
+Source the workspace first: `source ~/ros2_ws/install/setup.bash`
+
+### Verify servo communication
 
 ```bash
-## Launch the hardware interface
-ros2 launch so_arm_100 hardware.launch.py
-```
-
-### Test Servo Communication
-
-To verify servo connections and read their status:
-
-```bash
-# Build the test program
-cd ~/ros2_ws
-colcon build --packages-select so_arm_100_hardware
-source install/setup.bash
-
-# Set USB permissions
-sudo chmod 666 /dev/ttyUSB0
-
-# Run the servo test
 ros2 run so_arm_100_hardware test_servo
 ```
 
-This will:
+Reads ping / position / voltage / temperature for servos 1–6. Use this to grab
+raw tick values when calibrating.
 
-- Test communication with each servo (ID 1-6)
-- Read current position, voltage, temperature
-- Verify position control mode
-- Show any communication errors
+### Launch the hardware interface
 
-Example output for working servos:
+The serial port and calibration file are baked in as defaults, so the bare
+command works:
 
+```bash
+ros2 launch so_arm_100_bringup hardware.launch.py
 ```
 
-Testing servo 1...
-  Servo 1 responded to ping
-  Set to position control mode
-  Position: 1963
-  Voltage: 7.4V
-  Temperature: 29°C
-  Load: -24
+Useful overrides:
+
+```bash
+# Different serial device
+ros2 launch so_arm_100_bringup hardware.launch.py \
+  serial_port:=/dev/ttyACM0
+
+# Disable calibration (use raw servo ticks)
+ros2 launch so_arm_100_bringup hardware.launch.py \
+  calibration_file:=""
+
+# Explicit calibration file
+ros2 launch so_arm_100_bringup hardware.launch.py \
+  calibration_file:=$HOME/ros2_ws/src/SO-100-arm/so_arm_100_hardware/config/calibration.yaml
 ```
 
-### Test Hardware Interface
+### Launch MoveIt2 (planning + RViz)
 
-Send a test trajectory to move the physical arm:
+```bash
+ros2 launch so_arm_100_moveit_config demo.launch.py
+```
+
+This drives the **real** hardware (the serial port default is baked into the
+xacro). Plan and execute from the RViz MotionPlanning panel.
+
+### Simulation / visualization only
+
+```bash
+ros2 launch so_arm_100 gz.launch.py dof:5     # Gazebo
+ros2 launch so_arm_100 rviz.launch.py         # RViz (no hardware)
+```
+
+### Send a test trajectory
 
 ```bash
 ros2 action send_goal /arm_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory "{
   trajectory: {
     joint_names: [Shoulder_Rotation, Shoulder_Pitch, Elbow, Wrist_Pitch, Wrist_Roll],
     points: [
-      {
-        positions: [-0.5, -1.0, 0.5, 0.0, 0.0],
-        velocities: [0.0, 0.0, 0.0, 0.0, 0.0],
-        time_from_start: {sec: 2, nanosec: 0}
-      },
-      {
-        positions: [-0.5, 0.50, 0.0, 0.0, 0.0],
-        velocities: [0.0, 0.0, 0.0, 0.0, 0.0],
-        time_from_start: {sec: 4, nanosec: 0}
-      }
+      { positions: [-0.5, -1.0, 0.5, 0.0, 0.0], time_from_start: {sec: 2, nanosec: 0} },
+      { positions: [-0.5,  0.5, 0.0, 0.0, 0.0], time_from_start: {sec: 4, nanosec: 0} }
     ]
   }
 }"
 ```
 
-This will move the arm through two positions:
-
-- First point (2 sec): Shoulder down with elbow bent
-- Second point (4 sec): Shoulder up with arm extended
-
-Note: Ensure the arm has clear space to move before sending commands.
-
-### Launch the robot in Gazebo
+### Gripper
 
 ```bash
-ros2 launch so_arm_100 gz.launch.py dof:5
+ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand \
+  "{command: {position: 1.57, max_effort: 50.0}}"   # open
+ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand \
+  "{command: {position: 0.0,  max_effort: 50.0}}"   # close
 ```
 
-### Launch the robot in RVIZ
+## Calibration
+
+The hardware interface converts raw servo ticks (0–4095) to joint radians using:
+
+```
+radians = direction * (ticks - zero_ticks) * 2*pi / 4096
+```
+
+`so_arm_100_hardware/config/calibration.yaml` holds `zero_ticks` and `direction`
+per joint. The current values were measured directly from `test_servo` with the
+arm physically at its home pose (all joints at 0 rad):
+
+| Joint             | zero_ticks | direction |
+|-------------------|-----------:|:---------:|
+| Shoulder_Rotation |       2053 |    +1     |
+| Shoulder_Pitch    |        914 |    +1     |
+| Elbow             |       3028 |    −1     |
+| Wrist_Pitch       |       2859 |    −1     |
+| Wrist_Roll        |       3063 |    +1     |
+| Gripper           |       1889 |    +1     |
+
+### Re-calibrating
+
+1. Physically move the arm to its home / neutral pose.
+2. Read the raw ticks: `ros2 run so_arm_100_hardware test_servo`.
+3. Put each servo's `Position` value into `zero_ticks`.
+4. If a joint moves the wrong way for a positive command, flip `direction`
+   between `+1` and `-1`.
+5. Rebuild (or just re-launch — the YAML is read at activation, no rebuild
+   needed) and confirm `ros2 topic echo /joint_states` reads ~0 at home.
+
+There are also runtime helper services on `/so_arm_100_driver/`:
 
 ```bash
-ros2 launch so_arm_100 rviz.launch.py
+ros2 service call /so_arm_100_driver/toggle_torque  std_srvs/srv/Trigger {}  # free/hold joints
+ros2 service call /so_arm_100_driver/record_position std_srvs/srv/Trigger {} # dump current ticks
 ```
 
-### Launch MoveIt2 Demo
+## Gravity compensation
 
-```bash
-ros2 launch so_arm_100 demo.launch.py
-```
-
-### Test Joint Movement
-
-
-#### Send a test position command for 5dof arm
-
-```bash
-ros2 topic pub /arm_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory '{joint_names: ["Shoulder_Rotation", "Shoulder_Pitch", "Elbow", "Wrist_Roll", "Wrist_Pitch"], points: [{positions: [1.0, 1.0, 1.0, 1.0, 1.0], velocities: [], accelerations: [], effort: [], time_from_start: {sec: 1, nanosec: 0}}]}'
-```
-
-### Test Gripper Control
-
-The gripper can be controlled using ROS2 actions:
-
-```bash
-# Open gripper (full open position)
-ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand "{command: {position: 1.57, max_effort: 50.0}}"
-
-# Close gripper
-ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand "{command: {position: 0.0, max_effort: 50.0}}"
-
-# Half-open position
-ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand "{command: {position: 0.5, max_effort: 50.0}}"
-```
-
-Monitor gripper state:
-
-```bash
-ros2 topic echo /gripper_controller/state
-```
-
-Note: The gripper position ranges from 0.0 (closed) to 0.085 (fully open). The max_effort parameter controls the gripping force.
-
-## Demonstrations
-
-### Gazebo Simulation
-
-[![SO-100 Robot Arm Simulation](https://img.youtube.com/vi/ATuS6rOhYvI/0.jpg)](https://youtu.be/ATuS6rOhYvI?si=T6bOiCdqgBmSoSCu)
-
-The video above shows the SO-100 robot arm in Gazebo Harmonic simulation:
-
-- Joint trajectory execution
-- Position control
-- Dynamic simulation with gravity
-
-## Package Structure
-
-```bash
-so_arm_100/
-├── CMakeLists.txt                      # Build system configuration
-├── config/  
-│   ├── controllers_5dof.yaml           # 5DOF joint controller configuration
-│   ├── initial_positions.yaml          # Default joint positions
-│   ├── joint_limits.yaml               # Joint velocity and position limits
-│   ├── kinematics.yaml                 # MoveIt kinematics configuration
-│   ├── moveit_controllers.yaml         # MoveIt controller settings
-│   ├── moveit.rviz                     # RViz configuration for MoveIt
-│   ├── pilz_cartesian_limits.yaml      # Cartesian planning limits
-│   ├── ros2_controllers.yaml           # ROS2 controller settings
-│   ├── sensors_3d.yaml                 # Sensor configuration
-│   ├── so_arm_100.ros2_control.xacro   # ROS2 Control macro
-│   ├── so_arm_100.srdf                 # Semantic robot description
-│   ├── so_arm_100.urdf.xacro           # Main robot description macro
-│   └── urdf.rviz                       # RViz configuration for URDF
-├── launch/  
-│   ├── demo.launch.py                  # MoveIt demo with RViz
-│   ├── gz.launch.py                    # Gazebo simulation launch
-│   ├── move_group.launch.py            # MoveIt move_group launch
-│   ├── moveit_rviz.launch.py           # RViz with MoveIt plugin
-│   ├── rsp.launch.py                   # Robot state publisher
-│   ├── rviz.launch.py                  # Basic RViz visualization
-│   ├── setup_assistant.launch.py       # MoveIt Setup Assistant
-│   ├── spawn_controllers.launch.py     # Controller spawning
-│   ├── static_virtual_joint_tfs.launch.py
-│   └── warehouse_db.launch.py          # MoveIt warehouse database
-├── LICENSE
-├── models/
-│   ├── so_arm_100_5dof/                # 5DOF robot assets
-│   │   ├── meshes/                     # STL files for visualization
-│   │   └── model.config                # Model metadata
-├── package.xml                         # Package metadata and dependencies
-├── README.md                           # This documentation
-└── urdf/
-    ├── so_arm_100_5dof.csv             # Joint configuration data
-    ├── so_arm_100_5dof.urdf            # 5DOF robot description
+When the arm is extended, gravity load makes the servos under-reach their
+commanded angle. Each joint in `calibration.yaml` accepts an optional
+`gravity_coefficient`. Before each position write the interface applies:
 
 ```
+corrected_command = command + gravity_coefficient * sin(current_angle)
+```
 
-## Joint Configuration
+so the servo is told to aim slightly past the target to land on it under load.
 
-### 5-DOF Configuration
+**Tuning** (defaults are `0.0`, i.e. off):
 
-1. Shoulder Rotation (-3.14 to 3.14 rad)
-2. Shoulder Pitch    (-3.14 to 3.14 rad)
-3. Elbow            (-3.14 to 3.14 rad)
-4. Wrist Pitch      (-3.14 to 3.14 rad)
-5. Wrist Roll       (-3.14 to 3.14 rad)
+1. Command a moderately extended pose (e.g. `Shoulder_Pitch ≈ 0.5 rad`).
+2. If the arm droops below the RViz goal, raise that joint's
+   `gravity_coefficient` by `0.05`.
+3. Re-launch and repeat. Reduce it if the arm overshoots the goal.
+4. `Shoulder_Pitch` and `Elbow` usually need the most compensation.
 
-Note: The 5-DOF configuration uses continuous rotation joints with full range of motion (±π radians).
+## Controller tolerances
 
-## Known Issues
+`so_arm_100_moveit_config/config/*.yaml` (`hardware_controllers.yaml`,
+`ros2_controllers.yaml`, `controllers_5dof.yaml`) define per-joint constraints
+under `arm_controller`:
 
-- The MoveIt2 configuration is still in development
-- Some joint limits may need fine-tuning
-- Collision checking needs optimization
+```yaml
+constraints:
+  stopped_velocity_tolerance: 0.01
+  goal_time: 5.0        # seconds allowed after the trajectory to settle within goal
+  Shoulder_Rotation: { goal: 0.05, trajectory: 0.15 }
+  # ... same for the other joints
+```
 
-## Contributing
+These are read at controller load. Loosen `goal`/`trajectory` if you get
+spurious `GOAL_TOLERANCE_VIOLATED` aborts; tighten for more precise stops.
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## Joint configuration (5-DOF)
+
+| # | Joint             | Range (rad) |
+|---|-------------------|-------------|
+| 1 | Shoulder Rotation | −3.14 … 3.14 |
+| 2 | Shoulder Pitch    | −3.14 … 3.14 |
+| 3 | Elbow             | −3.14 … 3.14 |
+| 4 | Wrist Pitch       | −3.14 … 3.14 |
+| 5 | Wrist Roll        | −3.14 … 3.14 |
+
+## Package layout
+
+```
+SO-100-arm/
+├── so_arm_100/               # meta package, top-level launch (demo, gz, rviz)
+├── so_arm_100_bringup/       # hardware.launch.py (real-robot bring-up)
+├── so_arm_100_description/   # URDF / xacro, meshes
+├── so_arm_100_moveit_config/ # MoveIt config, controllers, tolerances
+└── so_arm_100_hardware/      # vendored ros2_control driver (Humble API)
+    ├── src/so_arm_100_interface.cpp
+    ├── config/calibration.yaml
+    └── config/hardware_config.yaml
+```
 
 ## License
 
-This project is licensed under the Apache License - see the LICENSE file for details
-
-## Authors
-
-Bruk G.
+Apache License — see `LICENSE`.
 
 ## Acknowledgments
 
-- Based on the SO-ARM100 project by The Robot Studio
+- Upstream: [brukg/SO-100-arm](https://github.com/brukg/SO-100-arm) and
+  [brukg/so_arm_100_hardware](https://github.com/brukg/so_arm_100_hardware) (Bruk G.)
+- Based on the SO-ARM100 project by The Robot Studio.
