@@ -18,11 +18,13 @@
 #include <memory>
 #include <termios.h>
 #include <map>
+#include <atomic>
 
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <SCServo_Linux/SCServo.h>
 #include "std_srvs/srv/trigger.hpp"
 #include <yaml-cpp/yaml.h>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 
 namespace so_arm_100_controller
 {
@@ -85,6 +87,24 @@ private:
     double range_ticks{4095};
   };
   std::map<std::string, JointCalibration> joint_calibration_;
+
+  // Live-tunable per-joint corrections, exposed as ROS2 parameters on the
+  // so_arm_100_driver node (e.g. via `ros2 param set` or rqt_reconfigure).
+  // Changing these takes effect on the next control cycle — no rebuild or
+  // relaunch needed. Seeded from calibration.yaml at activation, then
+  // overridable live. Indexed by servo_idx; std::atomic so the parameter
+  // callback (runs on node_'s executor thread) and write()/read() (run on
+  // the realtime control loop thread) can't race.
+  //   gravity_coefficient : see JointCalibration::gravity_coefficient above.
+  //   zero_trim_rad       : radians added to the reported/commanded angle —
+  //                         a live "nudge" for fixing zero-point drift
+  //                         without touching zero_ticks and rebuilding.
+  std::vector<std::atomic<double>> live_gravity_coeff_;
+  std::vector<std::atomic<double>> live_zero_trim_rad_;
+
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
+  rcl_interfaces::msg::SetParametersResult on_parameter_change(
+      const std::vector<rclcpp::Parameter> & parameters);
 
   // Communication configuration
   bool use_serial_;

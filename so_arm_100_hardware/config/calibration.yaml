@@ -31,6 +31,23 @@
 #
 # DIRECTION CHECK: command a small positive angle via MoveIt and watch the joint.
 #   If it moves the wrong way, flip direction between +1 and -1.
+#
+# LIVE TUNING (no rebuild/relaunch needed): both gravity_coefficient and a
+# per-joint zero_trim (radians) are exposed as ROS2 parameters on the
+# so_arm_100_driver node once the hardware is activated:
+#
+#   ros2 param set /so_arm_100_driver gravity_coefficient.Elbow 0.15
+#   ros2 param set /so_arm_100_driver zero_trim.Wrist_Roll 1.5708
+#
+# Or use the GUI: `ros2 run rqt_reconfigure rqt_reconfigure` (RViz2 itself has
+# no built-in slider panel for this — rqt_reconfigure is the ROS2 equivalent;
+# run it in a separate window alongside RViz). Both parameters take effect on
+# the very next control cycle, so you can watch RViz update live as you slide.
+#
+# zero_trim starts at 0.0 for every joint and is meant as a temporary nudge:
+# once you find a value that fixes a misalignment, fold it into zero_ticks
+# permanently (zero_ticks -= direction * round(trim * 4096 / (2*pi))) and set
+# the parameter back to 0, rather than leaving the correction live-only.
 
 # zero_ticks here are NOT the raw ticks at the folded rest pose. The URDF/SRDF
 # zero pose (all joints = 0) is the EXTENDED pose, not the folded one. These
@@ -62,7 +79,7 @@ joints:
     gravity_coefficient: 0.0
 
   Wrist_Roll:
-    zero_ticks: 1044
+    zero_ticks: 2068    # confirmed via live zero_trim tuning (was 1044 + trim -1.5708)
     direction: 1
     gravity_coefficient: 0.0
 

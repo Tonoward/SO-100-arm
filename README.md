@@ -19,8 +19,9 @@ This fork is a **self-contained source of truth** — no build-time patching.
 - **Servo calibration.** `so_arm_100_hardware/config/calibration.yaml` maps each
   servo's raw ticks to joint radians (`zero_ticks` + `direction`) and is loaded
   by default at launch. See [Calibration](#calibration).
-- **Gravity compensation.** Optional per-joint feedforward to counter droop when
-  the arm is extended. See [Gravity compensation](#gravity-compensation).
+- **Gravity compensation + live tuning.** Optional per-joint feedforward to
+  counter droop when extended, tunable at runtime with no rebuild. See
+  [Gravity compensation & live tuning](#gravity-compensation--live-tuning).
 - **Strict controller tolerances.** The `joint_trajectory_controller` now has
   real `goal`/`trajectory` constraints, so a move that misses its target is
   reported as `ABORTED` instead of a false `SUCCEEDED`.
@@ -159,27 +160,43 @@ radians = direction * (ticks - zero_ticks) * 2*pi / 4096
 ```
 
 `so_arm_100_hardware/config/calibration.yaml` holds `zero_ticks` and `direction`
-per joint. The current values were measured directly from `test_servo` with the
-arm physically at its home pose (all joints at 0 rad):
+per joint, and is loaded by default (see [above](#launch-the-hardware-interface)).
+
+**Important:** the URDF/SRDF "all joints = 0" pose is the arm fully
+**extended**, not the folded rest pose. `zero_ticks` is chosen so raw ticks at
+the folded pose map to the correct *non-zero* SRDF angles — it is **not**
+simply "the tick reading at rest." Current values:
 
 | Joint             | zero_ticks | direction |
 |-------------------|-----------:|:---------:|
-| Shoulder_Rotation |       2053 |    +1     |
-| Shoulder_Pitch    |        914 |    +1     |
-| Elbow             |       3028 |    −1     |
-| Wrist_Pitch       |       2859 |    −1     |
-| Wrist_Roll        |       3063 |    +1     |
-| Gripper           |       1889 |    +1     |
+| Shoulder_Rotation |       2016 |    +1     |
+| Shoulder_Pitch    |       1951 |    +1     |
+| Elbow             |       2127 |    +1     |
+| Wrist_Pitch       |       1988 |    +1     |
+| Wrist_Roll        |       2068 |    +1     |
+| Gripper           |       1844 |    +1     |
+
+### ⚠️ If you use LeRobot on this arm
+
+LeRobot's calibration writes directly to each servo's persistent EEPROM homing
+offset. That silently invalidates every `zero_ticks` value above — the arm's
+physical position won't change, but raw ticks reported for the same pose will
+shift, and RViz will stop matching the physical arm. If that happens, redo
+calibration below rather than assuming something is broken.
 
 ### Re-calibrating
 
-1. Physically move the arm to its home / neutral pose.
-2. Read the raw ticks: `ros2 run so_arm_100_hardware test_servo`.
-3. Put each servo's `Position` value into `zero_ticks`.
-4. If a joint moves the wrong way for a positive command, flip `direction`
-   between `+1` and `-1`.
-5. Rebuild (or just re-launch — the YAML is read at activation, no rebuild
-   needed) and confirm `ros2 topic echo /joint_states` reads ~0 at home.
+1. Move the arm to its folded rest pose (the one that used to line up).
+2. Read raw ticks: `ros2 run so_arm_100_hardware test_servo`.
+3. For each joint, compute the tick delta from the table above
+   (`new_reading - old_zero_ticks_reading_at_same_pose`) and add it to that
+   joint's `zero_ticks`. Keep `direction` as-is — mounting orientation doesn't
+   change.
+4. Rebuild `so_arm_100_hardware` and re-launch; confirm RViz matches the arm.
+
+If a single joint is off by a clean angle (e.g. ~90°) while the rest are fine,
+don't guess-and-rebuild — use the **live zero_trim** parameter below to dial it
+in interactively first, then bake the confirmed value into `zero_ticks`.
 
 There are also runtime helper services on `/so_arm_100_driver/`:
 
@@ -188,25 +205,51 @@ ros2 service call /so_arm_100_driver/toggle_torque  std_srvs/srv/Trigger {}  # f
 ros2 service call /so_arm_100_driver/record_position std_srvs/srv/Trigger {} # dump current ticks
 ```
 
-## Gravity compensation
+## Gravity compensation & live tuning
 
-When the arm is extended, gravity load makes the servos under-reach their
-commanded angle. Each joint in `calibration.yaml` accepts an optional
-`gravity_coefficient`. Before each position write the interface applies:
+When the arm is extended, gravity makes the servos under-reach their commanded
+angle. Before each position write, the driver applies:
 
 ```
 corrected_command = command + gravity_coefficient * sin(current_angle)
 ```
 
-so the servo is told to aim slightly past the target to land on it under load.
+so the servo aims slightly past the target to land on it under load.
 
-**Tuning** (defaults are `0.0`, i.e. off):
+Two values are tunable **live, with no rebuild or relaunch**, via ROS2
+parameters on the `/so_arm_100_driver` node:
 
-1. Command a moderately extended pose (e.g. `Shoulder_Pitch ≈ 0.5 rad`).
-2. If the arm droops below the RViz goal, raise that joint's
-   `gravity_coefficient` by `0.05`.
-3. Re-launch and repeat. Reduce it if the arm overshoots the goal.
-4. `Shoulder_Pitch` and `Elbow` usually need the most compensation.
+- **`gravity_coefficient.<JointName>`** — the sag compensation above.
+- **`zero_trim.<JointName>`** — a temporary radian offset added to a joint's
+  reported/commanded angle, for fixing a calibration misalignment live before
+  committing it to `zero_ticks`.
+
+Change them from the CLI:
+
+```bash
+ros2 param set /so_arm_100_driver gravity_coefficient.Elbow 0.15
+ros2 param set /so_arm_100_driver zero_trim.Wrist_Roll -1.5708
+```
+
+Or with a GUI — RViz2 has no built-in slider panel for this, so use
+`rqt_reconfigure` alongside it:
+
+```bash
+ros2 run rqt_reconfigure rqt_reconfigure
+```
+Select `/so_arm_100_driver` from the node list; every `gravity_coefficient.*`
+and `zero_trim.*` shows up as a slider and updates the arm on the next control
+cycle.
+
+**Tuning gravity compensation:**
+
+1. Command a moderately extended pose (e.g. `Shoulder_Pitch ≈ -1.0`).
+2. Raise that joint's `gravity_coefficient` in `~0.05` steps while watching the
+   physical arm vs. the RViz goal marker. Back off if it overshoots.
+3. `Shoulder_Pitch` and `Elbow` typically need the most compensation.
+4. Once you have good values, set them as the defaults in `calibration.yaml`
+   (the `gravity_coefficient` field per joint) so future launches start
+   compensated instead of at `0.0`.
 
 ## Controller tolerances
 
@@ -227,13 +270,18 @@ spurious `GOAL_TOLERANCE_VIOLATED` aborts; tighten for more precise stops.
 
 ## Joint configuration (5-DOF)
 
-| # | Joint             | Range (rad) |
-|---|-------------------|-------------|
-| 1 | Shoulder Rotation | −3.14 … 3.14 |
-| 2 | Shoulder Pitch    | −3.14 … 3.14 |
-| 3 | Elbow             | −3.14 … 3.14 |
-| 4 | Wrist Pitch       | −3.14 … 3.14 |
-| 5 | Wrist Roll        | −3.14 … 3.14 |
+| # | Joint             | Range (rad)     |
+|---|-------------------|-----------------|
+| 1 | Shoulder Rotation | −1.96 … 1.96    |
+| 2 | Shoulder Pitch    | −1.745 … 1.745  |
+| 3 | Elbow             | −1.5 … 1.5      |
+| 4 | Wrist Pitch       | −1.658 … 1.658  |
+| 5 | Wrist Roll        | −2.75 … 2.75    |
+| 6 | Gripper           | −0.179 … 1.571  |
+
+Note these limits are **asymmetric relative to the folded rest pose** — "0
+rad" is the extended pose (see [Calibration](#calibration)), so a joint's
+folded position sits well off-center within its range, not at the midpoint.
 
 ## Package layout
 

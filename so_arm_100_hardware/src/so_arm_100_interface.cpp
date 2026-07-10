@@ -67,6 +67,17 @@ CallbackReturn SOARM100Interface::on_init(const hardware_interface::HardwareInfo
     active_control_mode_.resize(num_joints, default_control_mode_);
     servo_position_offsets_.resize(num_joints, 0);
 
+    // std::atomic isn't copyable, so these are constructed at the target size
+    // directly rather than via resize(); each element still needs an explicit
+    // initial store since the default atomic constructor leaves the value
+    // unspecified.
+    live_gravity_coeff_ = std::vector<std::atomic<double>>(num_joints);
+    live_zero_trim_rad_ = std::vector<std::atomic<double>>(num_joints);
+    for (size_t i = 0; i < num_joints; ++i) {
+        live_gravity_coeff_[i].store(0.0);
+        live_zero_trim_rad_[i].store(0.0);
+    }
+
     return CallbackReturn::SUCCESS;
 }
 
@@ -268,8 +279,46 @@ CallbackReturn SOARM100Interface::on_activate(const rclcpp_lifecycle::State & /*
                   
     torque_service_ = node_->create_service<std_srvs::srv::Trigger>(
         "toggle_torque",
-        std::bind(&SOARM100Interface::torque_callback, this, 
+        std::bind(&SOARM100Interface::torque_callback, this,
                   std::placeholders::_1, std::placeholders::_2));
+
+    // Live-tunable parameters — seed from calibration.yaml (if loaded), then
+    // let the user override at runtime via `ros2 param set` or rqt_reconfigure,
+    // no rebuild/relaunch needed. Declared per-joint as
+    // "gravity_coefficient.<JointName>" and "zero_trim.<JointName>".
+    for (size_t i = 0; i < info_.joints.size(); ++i) {
+        const std::string& jname = info_.joints[i].name;
+        double init_gravity = 0.0;
+        if (joint_calibration_.count(jname) > 0) {
+            init_gravity = joint_calibration_[jname].gravity_coefficient;
+        }
+        live_gravity_coeff_[i].store(init_gravity);
+        live_zero_trim_rad_[i].store(0.0);
+
+        rcl_interfaces::msg::ParameterDescriptor gravity_desc;
+        gravity_desc.description =
+            "Gravity feedforward for " + jname + ": cmd += coeff * sin(current_angle)";
+        // step is deliberately left at its default (0.0 = unconstrained): ROS2
+        // requires (value - from_value) to be an exact multiple of a nonzero
+        // step, and with an irrational bound like M_PI that's never satisfied
+        // by any value, including the 0.0 default — declare_parameter aborts
+        // the whole process on the first activation. Bounds-only is what we want.
+        gravity_desc.floating_point_range.resize(1);
+        gravity_desc.floating_point_range[0].from_value = -1.0;
+        gravity_desc.floating_point_range[0].to_value = 1.0;
+        node_->declare_parameter<double>("gravity_coefficient." + jname, init_gravity, gravity_desc);
+
+        rcl_interfaces::msg::ParameterDescriptor trim_desc;
+        trim_desc.description =
+            "Live zero-position trim (rad) for " + jname + " — nudge to fix calibration "
+            "drift without rebuilding; bake the final value into calibration.yaml afterward";
+        trim_desc.floating_point_range.resize(1);
+        trim_desc.floating_point_range[0].from_value = -M_PI;
+        trim_desc.floating_point_range[0].to_value = M_PI;
+        node_->declare_parameter<double>("zero_trim." + jname, 0.0, trim_desc);
+    }
+    param_cb_handle_ = node_->add_on_set_parameters_callback(
+        std::bind(&SOARM100Interface::on_parameter_change, this, std::placeholders::_1));
 
     executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
     executor_->add_node(node_);
@@ -327,14 +376,13 @@ hardware_interface::return_type SOARM100Interface::write(const rclcpp::Time & /*
                                "Failed to write velocity to servo %d", servo_id);
                 }
             } else {
-                // Position mode — apply gravity feedforward before tick conversion
+                // Position mode — apply gravity feedforward before tick conversion.
+                // Reads the live (parameter-tunable) coefficient, not the static
+                // calibration.yaml value, so `ros2 param set` takes effect immediately.
                 double cmd = position_commands_[i];
-                const std::string& jname = info_.joints[i].name;
-                if (joint_calibration_.count(jname) > 0) {
-                    const double gc = joint_calibration_.at(jname).gravity_coefficient;
-                    if (gc != 0.0) {
-                        cmd += gc * std::sin(position_states_[i]);
-                    }
+                const double gc = live_gravity_coeff_[i].load();
+                if (gc != 0.0) {
+                    cmd += gc * std::sin(position_states_[i]);
                 }
                 int joint_pos_cmd = radians_to_ticks(cmd, i);
                 RCLCPP_DEBUG(rclcpp::get_logger("SOARM100Interface"),
@@ -479,24 +527,46 @@ void SOARM100Interface::calibrate_servo(uint8_t servo_id, int current_pos)
 double SOARM100Interface::ticks_to_radians(int ticks, size_t servo_idx)
 {
     const std::string& joint_name = info_.joints[servo_idx].name;
+    const double trim = live_zero_trim_rad_.empty() ? 0.0 : live_zero_trim_rad_[servo_idx].load();
     if (joint_calibration_.count(joint_name) > 0) {
         const auto& calib = joint_calibration_[joint_name];
-        return calib.direction * (ticks - calib.zero_ticks) * 2.0 * M_PI / 4096.0;
+        return calib.direction * (ticks - calib.zero_ticks) * 2.0 * M_PI / 4096.0 + trim;
     }
     return servo_directions_[servo_idx] *
-           (ticks - zero_positions_[servo_idx]) * 2.0 * M_PI / 4096.0;
+           (ticks - zero_positions_[servo_idx]) * 2.0 * M_PI / 4096.0 + trim;
 }
 
 int SOARM100Interface::radians_to_ticks(double radians, size_t servo_idx)
 {
     const std::string& joint_name = info_.joints[servo_idx].name;
+    const double trim = live_zero_trim_rad_.empty() ? 0.0 : live_zero_trim_rad_[servo_idx].load();
+    const double adjusted = radians - trim;
     if (joint_calibration_.count(joint_name) > 0) {
         const auto& calib = joint_calibration_[joint_name];
         return calib.zero_ticks +
-               calib.direction * static_cast<int>(radians * 4096.0 / (2.0 * M_PI));
+               calib.direction * static_cast<int>(adjusted * 4096.0 / (2.0 * M_PI));
     }
     return zero_positions_[servo_idx] +
-           servo_directions_[servo_idx] * static_cast<int>(radians * 4096.0 / (2.0 * M_PI));
+           servo_directions_[servo_idx] * static_cast<int>(adjusted * 4096.0 / (2.0 * M_PI));
+}
+
+rcl_interfaces::msg::SetParametersResult SOARM100Interface::on_parameter_change(
+    const std::vector<rclcpp::Parameter> & parameters)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+    for (const auto & param : parameters) {
+        const std::string& name = param.get_name();
+        for (size_t i = 0; i < info_.joints.size(); ++i) {
+            const std::string& jname = info_.joints[i].name;
+            if (name == "gravity_coefficient." + jname) {
+                live_gravity_coeff_[i].store(param.as_double());
+            } else if (name == "zero_trim." + jname) {
+                live_zero_trim_rad_[i].store(param.as_double());
+            }
+        }
+    }
+    return result;
 }
 
 void SOARM100Interface::record_current_position() 
