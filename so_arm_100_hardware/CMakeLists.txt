@@ -15,7 +15,13 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
+# Configuration-aware gravity compensation: kdl_parser builds a KDL::Tree
+# directly from the URDF's <inertial> tags; orocos_kdl's ChainDynParam then
+# computes the actual per-joint gravity torque for the whole chain.
+find_package(kdl_parser REQUIRED)
+find_package(orocos_kdl REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/so_arm_100_interface.cpp
@@ -25,11 +31,13 @@ target_include_directories(
   ${PROJECT_NAME}
   PRIVATE
   include
+  ${orocos_kdl_INCLUDE_DIRS}
 )
 
 target_link_libraries(${PROJECT_NAME}
   SCServo
   yaml-cpp
+  ${orocos_kdl_LIBRARIES}
 )
 
 ament_target_dependencies(${PROJECT_NAME}
@@ -38,6 +46,8 @@ ament_target_dependencies(${PROJECT_NAME}
   pluginlib
   rclcpp_lifecycle
   std_srvs
+  std_msgs
+  kdl_parser
 )
 
 pluginlib_export_plugin_description_file(hardware_interface so_arm_100_hardware.xml)

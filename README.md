@@ -19,9 +19,10 @@ This fork is a **self-contained source of truth** — no build-time patching.
 - **Servo calibration.** `so_arm_100_hardware/config/calibration.yaml` maps each
   servo's raw ticks to joint radians (`zero_ticks` + `direction`) and is loaded
   by default at launch. See [Calibration](#calibration).
-- **Gravity compensation + live tuning.** Optional per-joint feedforward to
-  counter droop when extended, tunable at runtime with no rebuild. See
-  [Gravity compensation & live tuning](#gravity-compensation--live-tuning).
+- **Position correction + live tuning.** Per-joint closed-loop trim (measures
+  real encoder error and corrects it — no physics model needed) plus an
+  optional KDL-based gravity feedforward, both tunable at runtime with no
+  rebuild. See [Position correction & live tuning](#position-correction--live-tuning).
 - **Strict controller tolerances.** The `joint_trajectory_controller` now has
   real `goal`/`trajectory` constraints, so a move that misses its target is
   reported as `ABORTED` instead of a false `SUCCEEDED`.
@@ -205,51 +206,118 @@ ros2 service call /so_arm_100_driver/toggle_torque  std_srvs/srv/Trigger {}  # f
 ros2 service call /so_arm_100_driver/record_position std_srvs/srv/Trigger {} # dump current ticks
 ```
 
-## Gravity compensation & live tuning
+## Position correction & live tuning
 
-When the arm is extended, gravity makes the servos under-reach their commanded
-angle. Before each position write, the driver applies:
+Three independent, live-tunable ROS2 parameters on the `/so_arm_100_driver`
+node correct for the arm under-reaching its commanded angle. **Prefer
+`integral_gain`** — it's simpler, more robust, and needs no physics model.
+
+### `integral_gain.<JointName>` (recommended)
+
+Every `write()` cycle:
 
 ```
-corrected_command = command + gravity_coefficient * sin(current_angle)
+error = commanded_angle - actual_angle        # actual = real encoder reading
+if |error| < 0.3 rad:
+    integral_trim += integral_gain * error * dt   # clamped to +/-0.5 rad
+corrected_command = commanded_angle + integral_trim
 ```
 
-so the servo aims slightly past the target to land on it under load.
+This measures the *real* error between target and actual position and grows a
+correction until it disappears — no model of mass, torque, or geometry
+required, so it automatically adapts to whatever the true disturbance is
+(gravity, friction, backlash) at *any* pose. It's deliberately frozen (not
+accumulating) outside the 0.3 rad deadband: during active fast motion, a large
+error is normal trajectory-tracking lag, not steady-state sag, and integrating
+that would fight the servo's own transient response and cause a jerk once the
+move ends.
 
-Two values are tunable **live, with no rebuild or relaunch**, via ROS2
-parameters on the `/so_arm_100_driver` node:
+```bash
+ros2 param set /so_arm_100_driver integral_gain.Elbow 0.4
+```
 
-- **`gravity_coefficient.<JointName>`** — the sag compensation above.
-- **`zero_trim.<JointName>`** — a temporary radian offset added to a joint's
-  reported/commanded angle, for fixing a calibration misalignment live before
-  committing it to `zero_ticks`.
+**Tuning:** start around `0.3`–`0.5`. Move to a pose where the arm visibly
+sags, hold it, and watch the shadow (the solid robot model, driven by real
+encoder feedback) slowly creep toward the goal marker over a second or two. If
+it's too slow, raise the gain; if it overshoots/oscillates, lower it.
 
-Change them from the CLI:
+**Current defaults** (baked into `calibration.yaml`, confirmed working):
+
+| Joint | `integral_gain` |
+|-------------------|-----:|
+| Shoulder_Rotation |  0.1 |
+| Shoulder_Pitch    |  0.3 |
+| Elbow             |  1.0 |
+| Wrist_Pitch       |  0.3 |
+| Wrist_Roll        |  0.1 |
+| Gripper           |  0.1 |
+
+These load automatically on every launch — no `ros2 param set` needed unless
+you want to retune. If you ever need to retune a joint, override it live first
+and only edit `calibration.yaml` once you've confirmed a better value.
+
+### `gravity_coefficient.<JointName>` (optional, physics-model-based)
+
+```
+corrected_command = commanded_angle + gravity_coefficient * gravity_torque(Nm)
+```
+
+`gravity_torque` comes from a **KDL model of the entire arm chain**, built at
+activation from the URDF's real per-link mass/inertia data (received over
+`/robot_description`) via `kdl_parser` + `KDL::ChainDynParam`. A joint's
+compensation correctly accounts for the load every joint further out on the
+chain adds — e.g. extending the Elbow increases the torque (and therefore the
+correction) computed for Shoulder_Pitch, not just Shoulder_Pitch's own angle.
+`Gripper` isn't part of that chain, so it (and any joint before the URDF has
+arrived) falls back to `gravity_coefficient * sin(target_angle)`.
+
+**Caveat:** a fixed coefficient applies a similarly large correction at *every*
+pose with nonzero computed torque — including poses you might expect to need
+none. For this arm's actual mass distribution, Elbow's gravity torque only
+drops ~14% between fully extended and folded, so `gravity_coefficient` alone
+can over-correct near the folded/"core" pose even while it's well-tuned for
+extension. `integral_gain` doesn't have this problem, since it only applies as
+much correction as the *measured* error actually calls for at each pose — use
+`gravity_coefficient` only if you want a fast feedforward push in addition to
+the integral trim, not as a replacement for it.
 
 ```bash
 ros2 param set /so_arm_100_driver gravity_coefficient.Elbow 0.15
+```
+
+### `zero_trim.<JointName>` (live calibration nudge)
+
+A temporary radian offset added to a joint's reported/commanded angle, for
+fixing a calibration misalignment live before committing it to `zero_ticks`.
+
+```bash
 ros2 param set /so_arm_100_driver zero_trim.Wrist_Roll -1.5708
 ```
 
-Or with a GUI — RViz2 has no built-in slider panel for this, so use
-`rqt_reconfigure` alongside it:
+Once you find a value that fixes a misalignment, fold it into `zero_ticks`
+permanently (`zero_ticks -= direction * round(trim * 4096 / (2*pi))`) and set
+the parameter back to `0`, rather than leaving the correction live-only.
+
+### GUI
+
+RViz2 has no built-in slider panel for parameters — use `rqt_reconfigure`
+alongside it:
 
 ```bash
 ros2 run rqt_reconfigure rqt_reconfigure
 ```
-Select `/so_arm_100_driver` from the node list; every `gravity_coefficient.*`
-and `zero_trim.*` shows up as a slider and updates the arm on the next control
-cycle.
+Select `/so_arm_100_driver` from the node list; every `integral_gain.*`,
+`gravity_coefficient.*`, and `zero_trim.*` shows up as a slider and updates the
+arm on the next control cycle.
 
-**Tuning gravity compensation:**
+Once you have good values for any of these, set them as the defaults in
+`calibration.yaml` (`integral_gain` / `gravity_coefficient` fields per joint)
+so future launches start compensated instead of at `0.0`.
 
-1. Command a moderately extended pose (e.g. `Shoulder_Pitch ≈ -1.0`).
-2. Raise that joint's `gravity_coefficient` in `~0.05` steps while watching the
-   physical arm vs. the RViz goal marker. Back off if it overshoots.
-3. `Shoulder_Pitch` and `Elbow` typically need the most compensation.
-4. Once you have good values, set them as the defaults in `calibration.yaml`
-   (the `gravity_coefficient` field per joint) so future launches start
-   compensated instead of at `0.0`.
+The shadow **will move** while you tune — that's expected, not a bug: these
+corrections work by changing what's physically commanded to the servo, so the
+true position (and therefore the shadow) shifts. The goal is for that movement
+to converge onto the goal marker, not to prevent it from moving at all.
 
 ## Controller tolerances
 
@@ -261,12 +329,27 @@ under `arm_controller`:
 constraints:
   stopped_velocity_tolerance: 0.01
   goal_time: 5.0        # seconds allowed after the trajectory to settle within goal
-  Shoulder_Rotation: { goal: 0.05, trajectory: 0.15 }
+  Shoulder_Rotation: { goal: 0.05, trajectory: 0.0 }
   # ... same for the other joints
 ```
 
-These are read at controller load. Loosen `goal`/`trajectory` if you get
-spurious `GOAL_TOLERANCE_VIOLATED` aborts; tighten for more precise stops.
+- **`goal`** (0.05 rad) — final-position accuracy, checked once the arm has
+  settled. This is the tolerance that actually matters; loosen it if you get
+  spurious `GOAL_TOLERANCE_VIOLATED` aborts, tighten for more precise stops.
+- **`trajectory`** (path tolerance) is deliberately **`0.0` (disabled)**, not
+  just loose. It checks real position against the naive, *uncompensated*
+  interpolated path at every instant during motion — but gravity compensation
+  (below) deliberately makes the real position deviate from that path in order
+  to counteract sag, so a nonzero path tolerance fights the very feature that's
+  supposed to make positioning reliable, and trips almost immediately
+  (`PATH_TOLERANCE_VIOLATED`) as soon as compensation is doing anything
+  meaningful. Leave it at `0.0` unless you disable gravity compensation.
+
+MoveIt has its own separate, one-time check before execution even starts:
+`trajectory_execution.allowed_start_tolerance` in `moveit_controllers.yaml`
+(raised from MoveIt's default `0.01` to `0.15`) — this catches the case where
+the arm hasn't finished settling under compensation between clicking Plan and
+clicking Execute.
 
 ## Joint configuration (5-DOF)
 

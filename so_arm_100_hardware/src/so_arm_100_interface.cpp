@@ -17,6 +17,10 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
+#include <kdl_parser/kdl_parser.hpp>
+#include <kdl/tree.hpp>
+#include <kdl/joint.hpp>
+
 namespace so_arm_100_controller
 {
 SOARM100Interface::SOARM100Interface() 
@@ -73,10 +77,13 @@ CallbackReturn SOARM100Interface::on_init(const hardware_interface::HardwareInfo
     // unspecified.
     live_gravity_coeff_ = std::vector<std::atomic<double>>(num_joints);
     live_zero_trim_rad_ = std::vector<std::atomic<double>>(num_joints);
+    live_integral_gain_ = std::vector<std::atomic<double>>(num_joints);
     for (size_t i = 0; i < num_joints; ++i) {
         live_gravity_coeff_[i].store(0.0);
         live_zero_trim_rad_[i].store(0.0);
+        live_integral_gain_[i].store(0.0);
     }
+    integral_trim_.resize(num_joints, 0.0);
 
     return CallbackReturn::SUCCESS;
 }
@@ -271,6 +278,15 @@ CallbackReturn SOARM100Interface::on_activate(const rclcpp_lifecycle::State & /*
         "feedback", 10, std::bind(&SOARM100Interface::feedback_callback, this, std::placeholders::_1));
     command_publisher_ = node_->create_publisher<sensor_msgs::msg::JointState>("command", 10);
 
+    // Configuration-aware gravity compensation needs the FULL robot URDF (link
+    // masses/inertias), not just the <ros2_control> block this plugin already
+    // has — so subscribe to /robot_description, published latched (transient
+    // local) by robot_state_publisher, matching its own QoS so we get it even
+    // though that node started first.
+    robot_description_sub_ = node_->create_subscription<std_msgs::msg::String>(
+        "/robot_description", rclcpp::QoS(1).transient_local(),
+        std::bind(&SOARM100Interface::robot_description_callback, this, std::placeholders::_1));
+
     // Add services
     calib_service_ = node_->create_service<std_srvs::srv::Trigger>(
         "record_position",
@@ -285,27 +301,30 @@ CallbackReturn SOARM100Interface::on_activate(const rclcpp_lifecycle::State & /*
     // Live-tunable parameters — seed from calibration.yaml (if loaded), then
     // let the user override at runtime via `ros2 param set` or rqt_reconfigure,
     // no rebuild/relaunch needed. Declared per-joint as
-    // "gravity_coefficient.<JointName>" and "zero_trim.<JointName>".
+    // "gravity_coefficient.<JointName>", "zero_trim.<JointName>", and
+    // "integral_gain.<JointName>".
     for (size_t i = 0; i < info_.joints.size(); ++i) {
         const std::string& jname = info_.joints[i].name;
         double init_gravity = 0.0;
+        double init_integral_gain = 0.0;
         if (joint_calibration_.count(jname) > 0) {
             init_gravity = joint_calibration_[jname].gravity_coefficient;
+            init_integral_gain = joint_calibration_[jname].integral_gain;
         }
         live_gravity_coeff_[i].store(init_gravity);
         live_zero_trim_rad_[i].store(0.0);
+        live_integral_gain_[i].store(init_integral_gain);
+        integral_trim_[i] = 0.0;
 
         rcl_interfaces::msg::ParameterDescriptor gravity_desc;
         gravity_desc.description =
-            "Gravity feedforward for " + jname + ": cmd += coeff * sin(current_angle)";
-        // step is deliberately left at its default (0.0 = unconstrained): ROS2
-        // requires (value - from_value) to be an exact multiple of a nonzero
-        // step, and with an irrational bound like M_PI that's never satisfied
-        // by any value, including the 0.0 default — declare_parameter aborts
-        // the whole process on the first activation. Bounds-only is what we want.
-        gravity_desc.floating_point_range.resize(1);
-        gravity_desc.floating_point_range[0].from_value = -1.0;
-        gravity_desc.floating_point_range[0].to_value = 1.0;
+            "Gravity feedforward for " + jname + ": cmd += coeff * gravity_torque(Nm) "
+            "from the full-chain KDL model (falls back to coeff * sin(target) if the "
+            "URDF hasn't arrived yet or this joint isn't part of the dynamics chain)";
+        // Deliberately no floating_point_range: the needed magnitude depends on
+        // servo load/stiffness per joint and isn't known in advance (a heavily
+        // loaded joint may need |gc| > 1). Leave it unconstrained rather than
+        // guess a cap that has to be revisited later.
         node_->declare_parameter<double>("gravity_coefficient." + jname, init_gravity, gravity_desc);
 
         rcl_interfaces::msg::ParameterDescriptor trim_desc;
@@ -316,6 +335,15 @@ CallbackReturn SOARM100Interface::on_activate(const rclcpp_lifecycle::State & /*
         trim_desc.floating_point_range[0].from_value = -M_PI;
         trim_desc.floating_point_range[0].to_value = M_PI;
         node_->declare_parameter<double>("zero_trim." + jname, 0.0, trim_desc);
+
+        rcl_interfaces::msg::ParameterDescriptor integral_desc;
+        integral_desc.description =
+            "Closed-loop steady-state trim gain (1/s) for " + jname + ": grows a "
+            "correction from measured (target - actual) error whenever |error| < " +
+            std::to_string(kIntegralDeadband) + " rad. No physics model needed — "
+            "adapts to whatever the real disturbance is at any pose. Start around "
+            "0.3-0.5 and increase if it settles too slowly; 0.0 disables it.";
+        node_->declare_parameter<double>("integral_gain." + jname, init_integral_gain, integral_desc);
     }
     param_cb_handle_ = node_->add_on_set_parameters_callback(
         std::bind(&SOARM100Interface::on_parameter_change, this, std::placeholders::_1));
@@ -354,8 +382,86 @@ void SOARM100Interface::feedback_callback(const sensor_msgs::msg::JointState::Sh
     last_feedback_msg_ = msg;
 }
 
-hardware_interface::return_type SOARM100Interface::write(const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
+void SOARM100Interface::robot_description_callback(const std_msgs::msg::String::SharedPtr msg)
 {
+    if (kdl_ready_.load()) {
+        return;  // already built from an earlier publish; nothing to do
+    }
+
+    KDL::Tree tree;
+    if (!kdl_parser::treeFromString(msg->data, tree)) {
+        RCLCPP_WARN(rclcpp::get_logger("SOARM100Interface"),
+                    "Failed to parse /robot_description into a KDL tree; gravity "
+                    "compensation will use the simpler sin(target) approximation "
+                    "for every joint instead.");
+        return;
+    }
+
+    const std::string root_link = info_.hardware_parameters.count("kdl_root_link") ?
+        info_.hardware_parameters.at("kdl_root_link") : "base_link";
+    const std::string tip_link = info_.hardware_parameters.count("kdl_tip_link") ?
+        info_.hardware_parameters.at("kdl_tip_link") : "Fixed_Gripper";
+
+    KDL::Chain chain;
+    if (!tree.getChain(root_link, tip_link, chain)) {
+        RCLCPP_WARN(rclcpp::get_logger("SOARM100Interface"),
+                    "Failed to extract KDL chain %s -> %s; gravity compensation "
+                    "will use the simpler sin(target) approximation for every joint.",
+                    root_link.c_str(), tip_link.c_str());
+        return;
+    }
+
+    // Map each controlled joint to its slot in the KDL chain's joint array.
+    // Fixed joints in the chain don't occupy a slot, so only count actuated
+    // ones. Any of our joints not found (e.g. Gripper, which branches off
+    // tip_link rather than being inline) stays at -1 and falls back to the
+    // sin(target) approximation in write().
+    joint_idx_to_kdl_idx_.assign(info_.joints.size(), -1);
+    unsigned int kdl_joint_count = 0;
+    for (unsigned int s = 0; s < chain.getNrOfSegments(); ++s) {
+        const KDL::Joint& kdl_joint = chain.getSegment(s).getJoint();
+        if (kdl_joint.getType() == KDL::Joint::None) {
+            continue;
+        }
+        for (size_t i = 0; i < info_.joints.size(); ++i) {
+            if (info_.joints[i].name == kdl_joint.getName()) {
+                joint_idx_to_kdl_idx_[i] = static_cast<int>(kdl_joint_count);
+                break;
+            }
+        }
+        ++kdl_joint_count;
+    }
+
+    kdl_chain_ = chain;
+    kdl_dyn_param_ = std::make_unique<KDL::ChainDynParam>(kdl_chain_, KDL::Vector(0, 0, -9.81));
+    kdl_ready_.store(true);  // must be the last step: write() gates all KDL reads on this flag
+
+    RCLCPP_INFO(rclcpp::get_logger("SOARM100Interface"),
+                "KDL gravity chain ready: %s -> %s (%u joints)",
+                root_link.c_str(), tip_link.c_str(), kdl_joint_count);
+}
+
+hardware_interface::return_type SOARM100Interface::write(const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
+{
+    const double dt = period.seconds();
+
+    // Compute the whole-chain gravity torque vector ONCE per cycle, not once
+    // per joint — it depends on every commanded joint angle simultaneously
+    // (e.g. Elbow's angle changes the torque needed at Shoulder_Pitch), so
+    // there's nothing to gain from recomputing it per-joint, only cost.
+    bool have_gravity_torques = false;
+    KDL::JntArray gravity_torques;
+    if (kdl_ready_.load()) {
+        KDL::JntArray q(kdl_chain_.getNrOfJoints());
+        for (size_t j = 0; j < info_.joints.size(); ++j) {
+            if (joint_idx_to_kdl_idx_[j] >= 0) {
+                q(joint_idx_to_kdl_idx_[j]) = position_commands_[j];
+            }
+        }
+        gravity_torques = KDL::JntArray(kdl_chain_.getNrOfJoints());
+        have_gravity_torques = (kdl_dyn_param_->JntToGravity(q, gravity_torques) == 0);
+    }
+
     if (use_serial_ && torque_enabled_) {  // Only write if torque is enabled
         for (size_t i = 0; i < info_.joints.size(); ++i) {
             uint8_t servo_id = static_cast<uint8_t>(i + 1);
@@ -379,11 +485,49 @@ hardware_interface::return_type SOARM100Interface::write(const rclcpp::Time & /*
                 // Position mode — apply gravity feedforward before tick conversion.
                 // Reads the live (parameter-tunable) coefficient, not the static
                 // calibration.yaml value, so `ros2 param set` takes effect immediately.
+                //
+                // Uses the TARGET angle (position_commands_), not the measured
+                // angle (position_states_ — the "shadow"), as JntToGravity's input
+                // and inside the sin() fallback. Using the measured angle would
+                // make the correction a function of a reading the correction
+                // itself just changed, so tuning gc could never settle on a single
+                // predictable value at a fixed goal. Basing it on the fixed target
+                // makes this pure feedforward: for a given goal and gc, the
+                // command is a single fixed value, so the shadow's movement while
+                // tuning converges cleanly onto the goal instead of chasing a
+                // moving reference.
                 double cmd = position_commands_[i];
                 const double gc = live_gravity_coeff_[i].load();
                 if (gc != 0.0) {
-                    cmd += gc * std::sin(position_states_[i]);
+                    if (have_gravity_torques && joint_idx_to_kdl_idx_[i] >= 0) {
+                        cmd += gc * gravity_torques(joint_idx_to_kdl_idx_[i]);
+                    } else {
+                        // Fallback: joint isn't part of the KDL chain (Gripper) or
+                        // the URDF hasn't arrived yet.
+                        cmd += gc * std::sin(position_commands_[i]);
+                    }
                 }
+
+                // Closed-loop steady-state trim: measures the real error (target
+                // minus actual encoder position) and grows a correction until it
+                // disappears — no physics model, so it automatically adapts to
+                // whatever the true disturbance is (gravity, friction, backlash)
+                // at any pose. Only accumulates within a deadband: outside it, the
+                // error is normal fast-motion tracking lag, not steady-state sag,
+                // and integrating that would fight the servo's own transient
+                // response. Applied unconditionally (even if the gain is 0) so
+                // that turning the gain off freezes the learned trim in place
+                // rather than snapping it away and causing a jerk.
+                {
+                    const double ki = live_integral_gain_[i].load();
+                    const double error = position_commands_[i] - position_states_[i];
+                    if (std::abs(error) < kIntegralDeadband) {
+                        integral_trim_[i] += ki * error * dt;
+                        integral_trim_[i] = std::clamp(integral_trim_[i], -kIntegralTrimClamp, kIntegralTrimClamp);
+                    }
+                    cmd += integral_trim_[i];
+                }
+
                 int joint_pos_cmd = radians_to_ticks(cmd, i);
                 RCLCPP_DEBUG(rclcpp::get_logger("SOARM100Interface"),
                            "Servo %d command: %.2f rad (comp %.2f) -> %d ticks",
@@ -563,6 +707,8 @@ rcl_interfaces::msg::SetParametersResult SOARM100Interface::on_parameter_change(
                 live_gravity_coeff_[i].store(param.as_double());
             } else if (name == "zero_trim." + jname) {
                 live_zero_trim_rad_[i].store(param.as_double());
+            } else if (name == "integral_gain." + jname) {
+                live_integral_gain_[i].store(param.as_double());
             }
         }
     }
@@ -703,9 +849,11 @@ bool SOARM100Interface::load_calibration(const std::string& filepath)
                 calib.direction  = data["direction"] ? data["direction"].as<int>() : 1;
                 calib.gravity_coefficient = data["gravity_coefficient"] ?
                     data["gravity_coefficient"].as<double>() : 0.0;
+                calib.integral_gain = data["integral_gain"] ?
+                    data["integral_gain"].as<double>() : 0.0;
                 RCLCPP_INFO(rclcpp::get_logger("SOARM100Interface"),
-                           "Loaded calibration for %s: zero_ticks=%d, direction=%d, gravity_coeff=%.3f",
-                           name.c_str(), calib.zero_ticks, calib.direction, calib.gravity_coefficient);
+                           "Loaded calibration for %s: zero_ticks=%d, direction=%d, gravity_coeff=%.3f, integral_gain=%.3f",
+                           name.c_str(), calib.zero_ticks, calib.direction, calib.gravity_coefficient, calib.integral_gain);
             } else if (data["min"] && data["center"] && data["max"]) {
                 // Legacy format: derive zero_ticks from center; infer direction from
                 // whether tick values increase or decrease from min pose to max pose.

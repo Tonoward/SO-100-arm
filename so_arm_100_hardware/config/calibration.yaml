@@ -23,26 +23,58 @@
 # does not need to change, since mounting orientation is unaffected.
 #
 # gravity_coefficient : feedforward correction added to the position command each cycle.
-#   Applied as:  corrected_cmd = commanded_angle + gravity_coefficient * sin(current_angle)
-#   Positive value → pushes the joint in the positive direction to fight gravity sag.
-#   Start at 0.0 and increase in 0.05 steps while watching the arm at ~0.5 rad extension.
-#   Stop when the physical arm tracks the RViz goal marker in extended poses.
-#   If the arm overcorrects (swings past the goal), reduce the coefficient.
+#   Applied as:  corrected_cmd = commanded_angle + gravity_coefficient * gravity_torque(Nm)
+#   where gravity_torque comes from a KDL model of the ENTIRE arm chain (built
+#   from the URDF's real link masses/inertias), so a joint's correction properly
+#   accounts for the load imposed by every joint further out — e.g. an extended
+#   Elbow increases the torque, and therefore the correction, computed for
+#   Shoulder_Pitch, not just Shoulder_Pitch's own angle. Falls back to the
+#   simpler gravity_coefficient * sin(target_angle) for Gripper (a branch, not
+#   part of the main chain) or before the URDF has arrived over /robot_description.
+#
+#   UNITS CHANGED from the original single-joint version: this used to be
+#   "radians per unit of sin()", now it's "radians per Nm of gravity torque".
+#   Any previously-tuned values are not reusable as-is — retune from scratch,
+#   starting small (typical gravity torques here are well under 1 Nm given
+#   this arm's link masses) and increasing while watching the shadow vs. goal.
 #
 # DIRECTION CHECK: command a small positive angle via MoveIt and watch the joint.
 #   If it moves the wrong way, flip direction between +1 and -1.
 #
-# LIVE TUNING (no rebuild/relaunch needed): both gravity_coefficient and a
-# per-joint zero_trim (radians) are exposed as ROS2 parameters on the
+# integral_gain : PREFER THIS over gravity_coefficient — it needs no physics
+#   model at all. Every write() cycle:
+#     error = commanded_angle - actual_angle (from the real encoder reading)
+#     if |error| < 0.3 rad: integral_trim += integral_gain * error * dt
+#     corrected_cmd = commanded_angle + integral_trim   (clamped to +/-0.5 rad)
+#   This directly measures whatever the true steady-state error is (gravity
+#   sag, friction, backlash — doesn't matter which) and grows a correction
+#   until it disappears, so it automatically adapts to every pose without
+#   needing to predict anything. It's deliberately frozen (not accumulating)
+#   outside the 0.3 rad deadband, since large error during active fast motion
+#   is normal trajectory-tracking lag, not sag — integrating that would fight
+#   the servo's own transient response and cause a jerk once the move ends.
+#   gravity_coefficient (KDL-based) is still available and can be combined
+#   with this, but for most cases integral_gain alone is simpler and more
+#   robust: it was gravity_coefficient's KDL model showing that "near the
+#   core" isn't actually a low-torque pose for this arm's geometry (Elbow's
+#   gravity torque only drops ~14% between fully extended and folded) that
+#   motivated adding this — a fixed feedforward coefficient will always apply
+#   a similarly large correction at both poses, whereas integral_gain applies
+#   only as much correction as the real, measured error actually calls for.
+#   Start around 0.3-0.5 and increase if it settles too slowly toward goal.
+#
+# LIVE TUNING (no rebuild/relaunch needed): gravity_coefficient, zero_trim,
+# and integral_gain are all exposed as ROS2 parameters on the
 # so_arm_100_driver node once the hardware is activated:
 #
+#   ros2 param set /so_arm_100_driver integral_gain.Elbow 0.4
 #   ros2 param set /so_arm_100_driver gravity_coefficient.Elbow 0.15
 #   ros2 param set /so_arm_100_driver zero_trim.Wrist_Roll 1.5708
 #
 # Or use the GUI: `ros2 run rqt_reconfigure rqt_reconfigure` (RViz2 itself has
 # no built-in slider panel for this — rqt_reconfigure is the ROS2 equivalent;
-# run it in a separate window alongside RViz). Both parameters take effect on
-# the very next control cycle, so you can watch RViz update live as you slide.
+# run it in a separate window alongside RViz). All three take effect on the
+# very next control cycle, so you can watch RViz update live as you slide.
 #
 # zero_trim starts at 0.0 for every joint and is meant as a temporary nudge:
 # once you find a value that fixes a misalignment, fold it into zero_ticks
@@ -62,28 +94,34 @@ joints:
     zero_ticks: 2016
     direction: 1
     gravity_coefficient: 0.0
+    integral_gain: 0.1    # confirmed working live via ros2 param set
 
   Shoulder_Pitch:
     zero_ticks: 1951
     direction: 1
     gravity_coefficient: 0.0
+    integral_gain: 0.3    # confirmed working live via ros2 param set
 
   Elbow:
     zero_ticks: 2127
     direction: 1
     gravity_coefficient: 0.0
+    integral_gain: 1.0    # confirmed working live via ros2 param set
 
   Wrist_Pitch:
     zero_ticks: 1988
     direction: 1
     gravity_coefficient: 0.0
+    integral_gain: 0.3    # confirmed working live via ros2 param set
 
   Wrist_Roll:
     zero_ticks: 2068    # confirmed via live zero_trim tuning (was 1044 + trim -1.5708)
     direction: 1
     gravity_coefficient: 0.0
+    integral_gain: 0.1    # confirmed working live via ros2 param set
 
   Gripper:
     zero_ticks: 1844
     direction: 1
     gravity_coefficient: 0.0
+    integral_gain: 0.1    # confirmed working live via ros2 param set

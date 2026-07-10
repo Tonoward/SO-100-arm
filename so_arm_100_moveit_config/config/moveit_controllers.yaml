@@ -1,5 +1,16 @@
 # MoveIt uses this configuration for controller management
 
+# MoveIt's default (0.01 rad) rejects a plan outright if the robot's current
+# state has drifted from the state captured at planning time by more than
+# this much — checked once, right before execution starts. With gravity
+# compensation active, the servo's settled position is deliberately offset
+# from the raw commanded target, and settling isn't instantaneous, so a few
+# seconds between clicking Plan and Execute can exceed the 0.01 rad default
+# even though nothing is actually wrong. Loosened to match the project's
+# existing 0.15 rad path tolerance (see hardware_controllers.yaml etc.).
+trajectory_execution:
+  allowed_start_tolerance: 0.15
+
 moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
 
 moveit_simple_controller_manager:

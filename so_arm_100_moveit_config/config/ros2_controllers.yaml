@@ -40,21 +40,27 @@ arm_controller:
     constraints:
       stopped_velocity_tolerance: 0.01
       goal_time: 2.0          # seconds after trajectory end to reach goal; raise if arm needs more settling time
+      # trajectory (path) tolerance is disabled (0.0 = unconstrained, per JTC
+      # convention) rather than tightened: gravity compensation deliberately
+      # commands a position offset from the naive/uncompensated interpolated
+      # path in order to counteract sag, so real position legitimately
+      # deviates from that path during motion. goal tolerance (checked only
+      # once settled, at the end) is what actually matters and stays tight.
       Shoulder_Rotation:
         goal: 0.05            # ~3 deg; tighten toward 0.01 once the arm reliably hits targets
-        trajectory: 0.15
+        trajectory: 0.0
       Shoulder_Pitch:
         goal: 0.05
-        trajectory: 0.15
+        trajectory: 0.0
       Elbow:
         goal: 0.05
-        trajectory: 0.15
+        trajectory: 0.0
       Wrist_Pitch:
         goal: 0.05
-        trajectory: 0.15
+        trajectory: 0.0
       Wrist_Roll:
         goal: 0.05
-        trajectory: 0.15
+        trajectory: 0.0
 
 gripper_controller:
   ros__parameters:

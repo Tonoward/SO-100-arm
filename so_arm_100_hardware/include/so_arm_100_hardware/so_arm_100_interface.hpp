@@ -21,10 +21,15 @@
 #include <atomic>
 
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <SCServo_Linux/SCServo.h>
 #include "std_srvs/srv/trigger.hpp"
 #include <yaml-cpp/yaml.h>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
+
+#include <kdl/chain.hpp>
+#include <kdl/chaindynparam.hpp>
+#include <kdl/jntarray.hpp>
 
 namespace so_arm_100_controller
 {
@@ -76,10 +81,22 @@ private:
   struct JointCalibration {
     int zero_ticks{2048};  // tick value that maps to 0 radians
     int direction{1};      // +1 or -1 depending on servo mounting orientation
-    // Feedforward correction: delta_cmd (rad) = gravity_coefficient * sin(q_actual).
-    // Positive compensates joints that sag in the negative direction under gravity.
-    // Tune empirically: start at 0.0, increase by 0.05 until extended pose aligns.
+    // Feedforward scale: delta_cmd (rad) = gravity_coefficient * gravity_torque (Nm),
+    // where gravity_torque comes from KDL::ChainDynParam::JntToGravity() computed
+    // over the arm's full kinematic chain (see kdl_chain_ below) — so a joint's
+    // compensation correctly accounts for the load imposed by every joint further
+    // out on the chain, not just its own angle. Falls back to a simpler
+    // gravity_coefficient * sin(q_target) approximation for any joint not part of
+    // that chain (currently just Gripper) or before the URDF has been received.
+    // Units changed when KDL support was added: previously "radians per unit
+    // sin()", now "radians per Nm" — old tuned values are not directly reusable.
     double gravity_coefficient{0.0};
+    // Integral gain (1/s) for the closed-loop steady-state trim — see
+    // live_integral_gain_ below. Unlike gravity_coefficient, this needs no
+    // physics model: it directly measures (target - actual) from the real
+    // encoder and grows a correction until that error disappears, so it
+    // adapts automatically to whatever the true disturbance is at any pose.
+    double integral_gain{0.0};
     // legacy fields kept for load_calibration backward-compat
     int min_ticks{0};
     int center_ticks{2048};
@@ -101,10 +118,44 @@ private:
   //                         without touching zero_ticks and rebuilding.
   std::vector<std::atomic<double>> live_gravity_coeff_;
   std::vector<std::atomic<double>> live_zero_trim_rad_;
+  std::vector<std::atomic<double>> live_integral_gain_;
 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
   rcl_interfaces::msg::SetParametersResult on_parameter_change(
       const std::vector<rclcpp::Parameter> & parameters);
+
+  // Closed-loop steady-state trim (an integral-only outer loop around the
+  // servo's own internal position control). Every write() cycle:
+  //   error = position_commands_[i] - position_states_[i]   (target - actual)
+  //   if |error| < kIntegralDeadband:        // "close enough" — any remaining
+  //       integral_trim_[i] += integral_gain * error * dt   // error is steady-
+  //       clamp to +/- kIntegralTrimClamp    // state (sag/friction/etc), not
+  //   cmd += integral_trim_[i]               // just trajectory-tracking lag
+  // Deliberately frozen (not updated) outside the deadband: during active
+  // fast motion, tracking error is large but expected and NOT what this is
+  // meant to correct — integrating it there would fight the servo's own
+  // transient response and reproduce the jerk this replaces. Only touched
+  // from write() (the realtime control thread), so plain doubles, no atomics.
+  std::vector<double> integral_trim_;
+  static constexpr double kIntegralDeadband = 0.3;   // rad
+  static constexpr double kIntegralTrimClamp = 0.5;  // rad
+
+  // Configuration-aware gravity compensation. Built once from the full robot
+  // URDF (received on /robot_description, published latched by
+  // robot_state_publisher) rather than just the <ros2_control> hardware
+  // block, since computing gravity torque needs every link's mass/inertia.
+  // kdl_ready_ is set exactly once, after kdl_chain_/kdl_dyn_param_ are fully
+  // constructed; write() checks it before touching either, so no separate
+  // lock is needed for that read/publish handoff between the executor thread
+  // (subscription callback) and the realtime control thread (write()).
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr robot_description_sub_;
+  void robot_description_callback(const std_msgs::msg::String::SharedPtr msg);
+  KDL::Chain kdl_chain_;
+  std::unique_ptr<KDL::ChainDynParam> kdl_dyn_param_;
+  // joint_idx_to_kdl_idx_[i] = index of info_.joints[i] within the KDL chain's
+  // joint array, or -1 if that joint isn't part of the chain (e.g. Gripper).
+  std::vector<int> joint_idx_to_kdl_idx_;
+  std::atomic<bool> kdl_ready_{false};
 
   // Communication configuration
   bool use_serial_;
