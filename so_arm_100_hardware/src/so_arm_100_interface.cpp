@@ -153,6 +153,21 @@ CallbackReturn SOARM100Interface::on_activate(const rclcpp_lifecycle::State & /*
 {
     RCLCPP_INFO(rclcpp::get_logger("SOARM100Interface"), "Activating so_arm_100 hardware interface...");
 
+    // Load calibration FIRST, before reading any servo positions. The initial
+    // read below seeds position_commands_ via ticks_to_radians(); if the
+    // calibration isn't loaded yet, that seed uses the default 2048/+1 mapping
+    // while the first write() uses the calibration mapping. The mismatch makes
+    // the arm jerk on activation. Loading here keeps both mappings consistent.
+    std::string calib_file = info_.hardware_parameters.count("calibration_file") ?
+        info_.hardware_parameters.at("calibration_file") : "";
+
+    if (!calib_file.empty()) {
+        if (!load_calibration(calib_file)) {
+            RCLCPP_WARN(rclcpp::get_logger("SOARM100Interface"),
+                       "Failed to load calibration file: %s", calib_file.c_str());
+        }
+    }
+
     // Read the position offset from EPROM
     auto read_pos_offset = [this](uint8_t servo_id) -> int {
         int raw_pos_offset = -1;
@@ -177,9 +192,19 @@ CallbackReturn SOARM100Interface::on_activate(const rclcpp_lifecycle::State & /*
         for (size_t i = 0; i < info_.joints.size(); ++i) {
             uint8_t servo_id = static_cast<uint8_t>(i + 1);
             
-            // First ping the servo
-            if (st3215_.Ping(servo_id) == -1) {
-                RCLCPP_ERROR(rclcpp::get_logger("SOARM100Interface"), 
+            // First ping the servo. A single dropped byte on the shared serial
+            // bus is common right after begin(), so retry a few times before
+            // treating it as a real hardware fault.
+            bool responded = false;
+            for (int attempt = 0; attempt < 5 && !responded; ++attempt) {
+                if (st3215_.Ping(servo_id) != -1) {
+                    responded = true;
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+            }
+            if (!responded) {
+                RCLCPP_ERROR(rclcpp::get_logger("SOARM100Interface"),
                             "No response from servo %d during initialization", servo_id);
                 return CallbackReturn::ERROR;
             }
@@ -191,14 +216,30 @@ CallbackReturn SOARM100Interface::on_activate(const rclcpp_lifecycle::State & /*
                 return CallbackReturn::ERROR;
             }
 
-            // Read initial position and set command to match
-            if (st3215_.FeedBack(servo_id) != -1) {
-                int pos = st3215_.ReadPos(servo_id);
-                // calibrate_servo(servo_id, pos);
-                position_states_[i] = ticks_to_radians(pos, i);
-                position_commands_[i] = position_states_[i];
-                RCLCPP_INFO(rclcpp::get_logger("SOARM100Interface"), 
-                           "Servo %d initialized at position %d", servo_id, pos);
+            // Read initial position and set command to match. Retry on a
+            // dropped read — leaving position_commands_ at its 0.0 default
+            // would command a real jump to 0 rad on next write().
+            bool got_feedback = false;
+            for (int attempt = 0; attempt < 5 && !got_feedback; ++attempt) {
+                if (st3215_.FeedBack(servo_id) != -1) {
+                    int pos = st3215_.ReadPos(servo_id);
+                    if (pos != -1) {
+                        position_states_[i] = ticks_to_radians(pos, i);
+                        position_commands_[i] = position_states_[i];
+                        RCLCPP_INFO(rclcpp::get_logger("SOARM100Interface"),
+                                   "Servo %d initialized at position %d", servo_id, pos);
+                        got_feedback = true;
+                    }
+                }
+                if (!got_feedback) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+            }
+            if (!got_feedback) {
+                RCLCPP_ERROR(rclcpp::get_logger("SOARM100Interface"),
+                            "Could not read initial position for servo %d; refusing to activate "
+                            "to avoid commanding an unintended jump", servo_id);
+                return CallbackReturn::ERROR;
             }
 
             // Read the position offset from servo EPROM.
@@ -233,17 +274,6 @@ CallbackReturn SOARM100Interface::on_activate(const rclcpp_lifecycle::State & /*
     executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
     executor_->add_node(node_);
     spin_thread_ = std::thread([this]() { executor_->spin(); });
-
-    // Load calibration
-    std::string calib_file = info_.hardware_parameters.count("calibration_file") ?
-        info_.hardware_parameters.at("calibration_file") : "";
-        
-    if (!calib_file.empty()) {
-        if (!load_calibration(calib_file)) {
-            RCLCPP_WARN(rclcpp::get_logger("SOARM100Interface"), 
-                       "Failed to load calibration file: %s", calib_file.c_str());
-        }
-    }
 
     RCLCPP_INFO(rclcpp::get_logger("SOARM100Interface"), "Hardware interface activated");
     return CallbackReturn::SUCCESS;
