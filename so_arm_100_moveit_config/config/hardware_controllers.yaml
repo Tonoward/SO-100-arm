@@ -6,7 +6,12 @@ controller_manager:
       type: joint_trajectory_controller/JointTrajectoryController
 
     gripper_controller:
-      type: parallel_gripper_action_controller/GripperActionController
+      # Was parallel_gripper_action_controller/GripperActionController, which
+      # is NOT installed in this ROS2 Humble image — the controller failed to
+      # load entirely (FATAL, absent from `ros2 control list_controllers`).
+      # Matches the same fix applied in ros2_controllers.yaml: a plain
+      # JointTrajectoryController, same mechanism as arm_controller.
+      type: joint_trajectory_controller/JointTrajectoryController
 
     arm_effort_controller:
       type: joint_trajectory_controller/JointTrajectoryController
@@ -65,13 +70,22 @@ arm_controller:
 
 gripper_controller:
   ros__parameters:
-    joint: Gripper
-    interface_name: position
+    joints:
+      - Gripper
     command_interfaces:
       - position
     state_interfaces:
       - position
       - velocity
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 2.0
+      Gripper:
+        goal: 0.05
+        trajectory: 0.0
 
 arm_effort_controller:
   ros__parameters:

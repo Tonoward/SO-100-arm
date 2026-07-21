@@ -7,7 +7,14 @@ controller_manager:
       type: joint_trajectory_controller/JointTrajectoryController
 
     gripper_controller:
-      type: parallel_gripper_action_controller/GripperActionController
+      # Was parallel_gripper_action_controller/GripperActionController, which is
+      # NOT installed in this ROS2 Humble image (only position_controllers/ and
+      # effort_controllers/GripperActionController exist) — so the controller
+      # silently failed to load and the gripper couldn't be driven from MoveIt.
+      # Use a JointTrajectoryController (same as the arm) so the gripper plans
+      # and executes through the standard FollowJointTrajectory action, which
+      # MoveIt's simple controller manager fully supports here.
+      type: joint_trajectory_controller/JointTrajectoryController
 
     arm_effort_controller:
       type: joint_trajectory_controller/JointTrajectoryController
@@ -64,14 +71,23 @@ arm_controller:
 
 gripper_controller:
   ros__parameters:
-    joint: Gripper
-    interface_name: position
+    joints:
+      - Gripper
     command_interfaces:
       - position
     state_interfaces:
       - position
       - velocity
     allow_nonzero_velocity_at_trajectory_end: true
+    allow_partial_joints_goal: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 2.0
+      # trajectory tolerance disabled for the same reason as the arm (the
+      # integral/gravity correction deliberately offsets the commanded path).
+      Gripper:
+        goal: 0.05
+        trajectory: 0.0
 
 arm_effort_controller:
   ros__parameters:

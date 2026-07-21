@@ -22,6 +22,20 @@
     <group name="gripper">
         <joint name="Gripper"/>
     </group>
+    <!-- Combined group: union of the arm and gripper subgroups, so a single
+         MoveIt plan can move all 6 joints at once (e.g. reposition the arm
+         while opening/closing the gripper). Planning is joint-space — set
+         goals from the RViz Joints tab or a named state below. MoveIt splits
+         execution across arm_controller (5 arm joints) and gripper_controller
+         (Gripper) automatically, sending both simultaneously. Note: this
+         combined group has no Cartesian IK solver (it isn't a single serial
+         chain), so the drag-the-marker interface is only for the `arm` group;
+         use the `arm` group for Cartesian arm goals and this group when you
+         want the gripper included in the same trajectory. -->
+    <group name="arm_gripper">
+        <group name="arm"/>
+        <group name="gripper"/>
+    </group>
     <!--GROUP STATES: Purpose: Define a named state for a particular group, in terms of joint values. This is useful to define states like 'folded arms'-->
     <group_state name="init" group="arm">
         <joint name="Shoulder_Rotation" value="0"/>
@@ -43,6 +57,24 @@
     <group_state name="open" group="gripper">
         <joint name="Gripper" value="0.7854"/>
     </group_state>
+    <!-- Combined arm+gripper named states, for one-plan testing of the
+         arm_gripper group (folded 'home' arm pose + gripper open / closed). -->
+    <group_state name="home_open" group="arm_gripper">
+        <joint name="Shoulder_Rotation" value="0"/>
+        <joint name="Shoulder_Pitch" value="-1.745"/>
+        <joint name="Elbow" value="1.5"/>
+        <joint name="Wrist_Pitch" value="1.25"/>
+        <joint name="Wrist_Roll" value="1.5708"/>
+        <joint name="Gripper" value="0.7854"/>
+    </group_state>
+    <group_state name="home_closed" group="arm_gripper">
+        <joint name="Shoulder_Rotation" value="0"/>
+        <joint name="Shoulder_Pitch" value="-1.745"/>
+        <joint name="Elbow" value="1.5"/>
+        <joint name="Wrist_Pitch" value="1.25"/>
+        <joint name="Wrist_Roll" value="1.5708"/>
+        <joint name="Gripper" value="-0.13"/>
+    </group_state>
     <!--END EFFECTOR: Purpose: Represent information about an end effector.-->
     <end_effector name="End_Effector" parent_link="End_Effector" group="arm"/>
     <!--VIRTUAL JOINT: Purpose: this element defines a virtual joint between a robot link and an external frame of reference (considered fixed with respect to the robot)-->
@@ -50,6 +82,12 @@
     <!--DISABLE COLLISIONS: By default it is assumed that any link of the robot could potentially come into collision with any other link in the robot. This tag disables collision checking between a specified pair of links. -->
     <disable_collisions link1="Base" link2="Shoulder_Rotation_Pitch" reason="Adjacent"/>
     <disable_collisions link1="Base" link2="Upper_Arm" reason="Never"/>
+    <!-- Mount_Platform is welded to base_link right next to Base, so they
+         overlap/touch at rest by construction. Re-check (or re-run the setup
+         assistant's self-collision check) once the real STL/offset is in
+         place — a large platform may also need this against Shoulder_Rotation_Pitch
+         or Upper_Arm depending on its actual footprint. -->
+    <disable_collisions link1="Base" link2="Mount_Platform" reason="Adjacent"/>
     <disable_collisions link1="End_Effector" link2="Fixed_Gripper" reason="Adjacent"/>
     <disable_collisions link1="End_Effector" link2="Lower_Arm" reason="Never"/>
     <disable_collisions link1="End_Effector" link2="Moving_Jaw" reason="Never"/>

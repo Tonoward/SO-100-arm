@@ -14,11 +14,27 @@ trajectory_execution:
 moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
 
 moveit_simple_controller_manager:
+  # arm_effort_controller / gripper_effort_controller are deliberately NOT
+  # listed here. demo.launch.py spawns every controller in this list as an
+  # unconditional, immediately-active spawner (moveit_configs_utils'
+  # generate_spawn_controllers_launch has no "default vs. inactive" logic —
+  # unlike this project's own spawn_controllers.launch.py, which demo.launch.py
+  # doesn't actually call). The *_effort_controllers claim the SAME command
+  # interfaces (effort) as arm_controller/gripper_controller claim (position)
+  # for the SAME joints, so only one of each conflicting pair can actually
+  # activate — for the gripper, the effort one was winning, leaving
+  # gripper_controller inactive with no action server, so MoveIt could never
+  # connect to it ("Action client not connected to action server:
+  # gripper_controller/follow_joint_trajectory"). Since these effort
+  # controllers are default: false anyway (MoveIt never selects them for
+  # execution), simply not auto-spawning them removes the conflict entirely.
+  # To use effort control instead, load/activate them manually via
+  # `ros2 control load_controller` + `switch_controllers`, deactivating the
+  # position-based ones first — never run both position and effort variants
+  # for the same joints at once.
   controller_names:
     - arm_controller
-    - arm_effort_controller
     - gripper_controller
-    - gripper_effort_controller
 
   arm_controller:
     type: FollowJointTrajectory
@@ -32,10 +48,15 @@ moveit_simple_controller_manager:
     default: true
 
   gripper_controller:
-    type: ParallelGripperCommand
+    # Was ParallelGripperCommand — a controller handle type this MoveIt build's
+    # simple controller manager does not provide (it supports only
+    # FollowJointTrajectory and GripperCommand). Driving the gripper as a normal
+    # trajectory controller (matching ros2_controllers.yaml) lets it plan and
+    # execute exactly like the arm.
+    type: FollowJointTrajectory
     joints:
       - Gripper
-    action_ns: gripper_cmd
+    action_ns: follow_joint_trajectory
     default: true
 
   arm_effort_controller:

@@ -17,6 +17,13 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
     name="meshes_file_directory"
     value="package://so_arm_100_description/models/so_arm_100_5dof/meshes"/>
 
+  <!-- STL files carry no units; URDF always assumes meters. CAD tools (e.g.
+       SolidWorks) commonly export in millimeters, which renders 1000x too
+       big. Check the real mesh size with stl_bbox.py against a ruler
+       measurement of the physical plate, then set this once here rather than
+       editing both the visual and collision mesh tags below. -->
+  <xacro:property name="mount_platform_scale" value="0.001 0.001 0.001"/>
+
   <link name="${prefix}base_link">
     <gazebo>
       <material>Gazebo/Grey</material>
@@ -63,6 +70,41 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
         <mesh
           filename="${meshes_file_directory}/Base.STL"
           scale="0.9 0.9 0.9" />
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Static mounting platform the robot's base_link sits on/in. Not part of
+       the SO-100 assembly itself (unlike Base above) — this is the user's own
+       plate with a hole for a pick-and-place object. Purely cosmetic/collision
+       geometry: it carries no joint (rigidly welded to base_link) and no
+       inertial tag, matching how base_link itself has none (only Gazebo
+       physics reads inertial tags; the real hardware interface and MoveIt's
+       kinematics don't need them for a fixed-to-world platform).
+       TODO: drop the STL at
+       so_arm_100_description/models/so_arm_100_5dof/meshes/Mount_Platform.STL
+       and adjust the origin xyz/rpy below to match where the plate actually
+       sits relative to base_link (easiest done by eye in RViz). -->
+  <joint name="${prefix}mount_platform_joint" type="fixed">
+    <parent link="${prefix}base_link"/>
+    <child link="${prefix}Mount_Platform"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="${prefix}Mount_Platform">
+    <visual>
+      <origin xyz="0 0.016 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="${meshes_file_directory}/Mount_Platform.STL" scale="${mount_platform_scale}"/>
+      </geometry>
+      <material name="grey">
+        <color rgba="0.6 0.6 0.6 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="${meshes_file_directory}/Mount_Platform.STL" scale="${mount_platform_scale}"/>
       </geometry>
     </collision>
   </link>

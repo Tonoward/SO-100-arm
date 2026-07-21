@@ -122,6 +122,36 @@ ros2 launch so_arm_100_moveit_config demo.launch.py
 This drives the **real** hardware (the serial port default is baked into the
 xacro). Plan and execute from the RViz MotionPlanning panel.
 
+**Planning groups** (RViz MotionPlanning → *Planning Group*):
+
+| Group | Joints | Cartesian marker | Use for |
+|-------|--------|:---:|---------|
+| `arm` | 5 arm joints | ✅ | Dragging the arm to a Cartesian pose |
+| `gripper` | Gripper | — | Opening/closing the gripper alone |
+| `arm_gripper` | all 6 | — | **One plan that moves the arm and gripper together** |
+
+To move the arm *and* open/close the gripper in a **single** trajectory, select
+`arm_gripper`, set goals in the *Joints* tab (or pick a named state —
+`home_open` / `home_closed`), then Plan & Execute. MoveIt splits execution
+across `arm_controller` and `gripper_controller` and sends them simultaneously.
+The `arm_gripper` group plans in joint space (it has no Cartesian IK solver,
+since the gripper branches off the arm chain) — for drag-the-marker Cartesian
+arm goals, use the `arm` group.
+
+> `moveit_controllers.yaml`'s `controller_names` deliberately lists only
+> `arm_controller` and `gripper_controller` — **not** the `*_effort_controller`
+> variants. `demo.launch.py` spawns every listed controller unconditionally as
+> active (`moveit_configs_utils`'s built-in spawn logic has no "default vs.
+> inactive" handling), and the effort controllers claim the same command
+> interfaces (effort) as the position ones for the same joints — only one of
+> each conflicting pair can actually activate. For the gripper this meant
+> `gripper_effort_controller` silently won the claim, leaving
+> `gripper_controller` inactive with no action server, so `arm_gripper`
+> executions always failed with "Action client not connected." If you need
+> effort control, load/activate `arm_effort_controller` /
+> `gripper_effort_controller` manually (`ros2 control load_controller` +
+> `switch_controllers`), deactivating the position-based ones first.
+
 ### Simulation / visualization only
 
 ```bash
@@ -145,11 +175,29 @@ ros2 action send_goal /arm_controller/follow_joint_trajectory control_msgs/actio
 
 ### Gripper
 
+The gripper is driven by its own `JointTrajectoryController` (same mechanism as
+the arm), so it can be **planned and executed from MoveIt** like any other
+group: in the RViz MotionPlanning panel, set *Planning Group* to `gripper`, set
+a target from the *Joints* tab (or the `open`/`close` named states), then Plan
+& Execute.
+
+> Originally the gripper used `parallel_gripper_action_controller` +
+> `ParallelGripperCommand`, neither of which is available in this ROS2 Humble
+> image — so the gripper silently failed to load and couldn't be driven from
+> MoveIt. It's now a plain trajectory controller (see `ros2_controllers.yaml`
+> and `moveit_controllers.yaml`).
+
+From the CLI, publish a trajectory directly (Gripper range ≈ `-0.13` closed to
+`0.79` open):
+
 ```bash
-ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand \
-  "{command: {position: 1.57, max_effort: 50.0}}"   # open
-ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand \
-  "{command: {position: 0.0,  max_effort: 50.0}}"   # close
+# Open
+ros2 topic pub -1 /gripper_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory \
+  '{joint_names: [Gripper], points: [{positions: [0.7854], time_from_start: {sec: 1}}]}'
+
+# Close
+ros2 topic pub -1 /gripper_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory \
+  '{joint_names: [Gripper], points: [{positions: [-0.13], time_from_start: {sec: 1}}]}'
 ```
 
 ## Calibration
