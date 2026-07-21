@@ -1,0 +1,48 @@
+# Hardcoded pick-and-place waypoints. All poses are [x, y, z, roll, pitch, yaw]
+# in meters/radians, expressed in `base_frame` (base_link is world-fixed here).
+#
+# Tuning workflow (same idea as calibration.yaml's zero_trim/gravity_coefficient):
+# 1. Launch with the arm in fake/slow mode first if possible, or with
+#    velocity_scaling turned down (default 0.2 below).
+# 2. Watch RViz: the "stick" collision object appears at stick.pose. Nudge
+#    stick.pose (position, and rpy if the stick isn't upright) until the box
+#    lines up with the real stick sitting in the platform hole.
+# 3. Nudge grasp.offset (expressed IN THE STICK'S OWN FRAME) until the arm's
+#    planned grasp pose has the gripper jaws straddling the stick at a sane
+#    height/orientation. This is a relative offset, so once it's right it
+#    stays right even if you later move stick.pose (e.g. different hole).
+# 4. Tune gripper.grasp_position empirically: start slightly open, close
+#    further until the jaws just grip the 6.5mm stick without crushing it.
+# 5. Tune place.pose to wherever "in front of the robot" should be.
+# No rebuild needed for any of this -- just edit this file and relaunch.
+
+pick_and_place_node:
+  ros__parameters:
+    base_frame: "base_link"
+
+    stick:
+      size: [0.0060, 0.0060, 0.1]   # x, y, z (meters) -- 6.0mm x 6.0mm x 100mm
+      pose: [0.379, -0.026, 0.064, 0.0, 0.0, 0.0]  
+
+    grasp:
+      # Gripper target pose relative to stick.pose (composed as stick_pose *
+      # offset), so it moves with the stick if you relocate the hole.
+      offset: [0.0, 0.0, 0.03, 0.0, 1.5708, 0.0]   # TODO: tune -- guess: grasp 3cm up the stick, gripper pointing down
+      pregrasp_lift: 0.05     # meters, straight up (world Z) above the grasp pose before descending
+      lift_height: 0.05       # meters, straight up (world Z) after closing, to clear the hole
+      gripper_open_position: 0.7854    # radians, Gripper joint value when open (matches the SRDF "open" state)
+      gripper_grasp_position: 0.2   # radians, Gripper joint value when closed on the stick -- TODO: tune live
+
+    place:
+      pose: [0.0, 0.25, 0.15, 0.0, 1.5708, 0.0]   # TODO: tune -- where "in front of the robot" should be
+
+    velocity_scaling: 0.2       # keep slow for initial real-hardware testing
+    acceleration_scaling: 0.2
+    planning_time: 5.0
+
+    # Each step is planned first and previewed in RViz (display_planned_path)
+    # before a terminal prompt asks whether to execute it, skip it, or abort
+    # the whole run -- lets you check a plan visually before trusting it on
+    # real hardware, and step through the sequence one motion at a time.
+    # Set to false for an unattended run once everything above is tuned.
+    interactive: true

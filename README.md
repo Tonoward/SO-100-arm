@@ -26,12 +26,30 @@ This fork is a **self-contained source of truth** — no build-time patching.
 - **Strict controller tolerances.** The `joint_trajectory_controller` now has
   real `goal`/`trajectory` constraints, so a move that misses its target is
   reported as `ABORTED` instead of a false `SUCCEEDED`.
+- **Combined arm+gripper planning.** An `arm_gripper` SRDF group lets a single
+  MoveIt plan move the arm and open/close the gripper together. See
+  [Launch MoveIt2](#launch-moveit2-planning--rviz).
+- **Pick-and-place demo.** A static mounting platform (`Mount_Platform` link)
+  plus a separate `so_arm_100_pick_and_place` package that runs a hardcoded
+  grasp/lift/place sequence on a fixed-size stick. See
+  [Pick-and-place demo](#pick-and-place-demo).
 
 ## Prerequisites
 
 - ROS2 Humble
 - MoveIt2, ros2_control
 - (Simulation only) Gazebo + gz_ros2_control
+- (Pick-and-place demo only) `ros-humble-pymoveit2` — a pure-Python MoveIt2
+  interface (actions/services only, no compiled bindings), needed because
+  neither `moveit_commander` nor `moveit_py` is packaged for ROS2 Humble.
+  Already declared as a `<depend>` in `so_arm_100_pick_and_place/package.xml`,
+  so a fresh `rosdep install` (see [Installation](#installation)) picks it up
+  automatically. On an existing workspace, either re-run that or install it
+  directly:
+
+  ```bash
+  sudo apt-get install -y ros-humble-pymoveit2
+  ```
 
 ### Hardware
 
@@ -199,6 +217,67 @@ ros2 topic pub -1 /gripper_controller/joint_trajectory trajectory_msgs/msg/Joint
 ros2 topic pub -1 /gripper_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory \
   '{joint_names: [Gripper], points: [{positions: [-0.13], time_from_start: {sec: 1}}]}'
 ```
+
+### Pick-and-place demo
+
+A hardcoded (no perception, no closed loop) grasp/lift/place sequence: grab a
+fixed-size stick from a known pose, lift it clear of its mounting hole, and
+move it to a fixed place pose.
+
+**Mount_Platform.** A static plate the robot's `base_link` sits on/in, with a
+hole for the stick — separate from the SO-100 assembly's own `Base` link.
+Defined in
+`so_arm_100_description/urdf/so_arm_100_5dof_arm.urdf.xacro`, welded to
+`base_link` with a fixed joint (so it's static in both RViz and reality, same
+as the arm itself). To set it up:
+
+1. Drop your STL at
+   `so_arm_100_description/models/so_arm_100_5dof/meshes/Mount_Platform.STL`.
+2. If it renders far too big, it's almost certainly a units mismatch (STL has
+   no embedded units; URDF always assumes meters, but CAD tools commonly
+   export in millimeters). Set the `mount_platform_scale` xacro property near
+   the top of that file — `"0.001 0.001 0.001"` for the mm→m case.
+3. Adjust the `mount_platform_joint`'s `origin xyz`/`rpy` to match where the
+   plate actually sits relative to `base_link` — easiest by eye in RViz.
+
+A `disable_collisions` entry for `Mount_Platform`/`Base` is already in the
+SRDF (they're welded together and touch at rest); you may need more entries
+once the real mesh's footprint is known.
+
+**Running it.** Bring up MoveIt + the real hardware, then run the
+pick-and-place node in a second terminal:
+
+```bash
+ros2 launch so_arm_100_moveit_config pickandplace_demo.launch.py
+# in another terminal:
+ros2 launch so_arm_100_pick_and_place pick_and_place.launch.py
+```
+
+`pickandplace_demo.launch.py` is a copy of `demo.launch.py`, kept separate so
+pick-and-place-specific additions don't risk the generic MoveIt demo.
+
+**Tuning (`so_arm_100_pick_and_place/config/pick_and_place.yaml`).** No
+rebuild needed — edit and relaunch:
+
+| Parameter | Meaning |
+|---|---|
+| `stick.size` | Box dimensions in meters — already set to `0.0065 x 0.0065 x 0.1` (6.5mm × 6.5mm × 100mm) |
+| `stick.pose` | `[x, y, z, roll, pitch, yaw]` in `base_link` — where the stick collision object sits. **Placeholder — tune to the real hole location.** |
+| `grasp.offset` | Gripper target pose *relative to `stick.pose`* (composed, not absolute) — where the jaws should close around the stick. **Placeholder — tune live.** |
+| `grasp.pregrasp_lift` / `grasp.lift_height` | Meters, straight up (world Z), before descending / after closing to clear the hole |
+| `grasp.gripper_open_position` / `grasp.gripper_grasp_position` | Gripper joint radians when open / closed on the stick. The closed value can't be computed in advance — tune it live against the real 6.5mm stick |
+| `place.pose` | `[x, y, z, roll, pitch, yaw]` — the drop-off location. **Placeholder — tune to taste.** |
+| `velocity_scaling` / `acceleration_scaling` | Default `0.2` — deliberately slow for initial real-hardware runs |
+
+Tune in this order: (1) `stick.pose` — watch the collision box line up with
+the real stick in RViz; (2) `grasp.offset` — since it's relative, it stays
+correct even if you later move `stick.pose`; (3)
+`grasp.gripper_grasp_position` — empirically, on the real stick; (4)
+`place.pose`.
+
+Every step (each arm move, each gripper action) checks its MoveIt error code
+and aborts with a logged reason on failure rather than silently continuing —
+watch the terminal running `pick_and_place_node` if a run doesn't finish.
 
 ## Calibration
 
@@ -420,8 +499,11 @@ folded position sits well off-center within its range, not at the midpoint.
 SO-100-arm/
 ├── so_arm_100/               # meta package, top-level launch (demo, gz, rviz)
 ├── so_arm_100_bringup/       # hardware.launch.py (real-robot bring-up)
-├── so_arm_100_description/   # URDF / xacro, meshes
+├── so_arm_100_description/   # URDF / xacro, meshes (incl. Mount_Platform)
 ├── so_arm_100_moveit_config/ # MoveIt config, controllers, tolerances
+├── so_arm_100_pick_and_place/ # hardcoded grasp/lift/place demo (pymoveit2)
+│   ├── so_arm_100_pick_and_place/pick_and_place_node.py
+│   └── config/pick_and_place.yaml
 └── so_arm_100_hardware/      # vendored ros2_control driver (Humble API)
     ├── src/so_arm_100_interface.cpp
     ├── config/calibration.yaml

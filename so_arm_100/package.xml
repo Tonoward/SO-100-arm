@@ -14,6 +14,7 @@
   <exec_depend>so_arm_100_bringup</exec_depend>
   <exec_depend>so_arm_100_description</exec_depend>
   <exec_depend>so_arm_100_moveit_config</exec_depend>
+  <exec_depend>so_arm_100_pick_and_place</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
