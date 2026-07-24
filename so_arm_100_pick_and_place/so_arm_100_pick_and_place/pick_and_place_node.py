@@ -8,13 +8,25 @@ Built on pymoveit2 (ros-humble-pymoveit2), since no compiled Python MoveIt
 bindings (moveit_commander / moveit_py) are available on this ROS2 Humble
 install.
 
-Interactive mode (default, `interactive:=true`): each step is planned first
-and published to `display_planned_path` so RViz shows it as a preview --
-nothing moves yet. The terminal then prompts before executing, so you can
-check the preview in RViz and tune pick_and_place.yaml without the arm
-actually moving on a bad plan. Run via `ros2 run`, not `ros2 launch`, if the
-Enter-key prompts don't seem to reach this process -- launch's stdin
-passthrough can be unreliable with multiple nodes.
+Interactive mode (default, `interactive:=true`): every arm move is gated by
+TWO prompts before anything actually happens --
+  1. The goal is IK-solved and published as a full "ghost" robot state to
+     `display_robot_state` -- the same kind of preview RViz's own
+     MotionPlanning panel shows when you drag its interactive marker, before
+     you'd hit "Plan". Add a "RobotState" display in RViz once if you don't
+     already have one (Displays panel -> Add -> By display type ->
+     moveit_rviz_plugin -> RobotState; set its "Robot State Topic" to
+     `display_robot_state` if it doesn't default to that already). If IK
+     fails outright, this is reported immediately -- no need to wait out a
+     full planning timeout to learn the goal is unreachable.
+  2. Once you approve that, it plans and publishes the trajectory to
+     `display_planned_path` so RViz shows it as an animated preview -- the
+     robot doesn't move yet. Only after a second confirmation does it
+     execute.
+Each prompt accepts Enter/e to proceed, s to skip just that step, or q to
+abort the whole run. Run via `ros2 run`, not `ros2 launch`, if the Enter-key
+prompts don't seem to reach this process -- launch's stdin passthrough can
+be unreliable with multiple nodes.
 """
 from threading import Thread
 from typing import Callable, Optional
@@ -23,7 +35,8 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectory
-from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
+from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory, DisplayRobotState
+from sensor_msgs.msg import JointState
 
 from pymoveit2 import MoveIt2, MoveIt2Gripper
 
@@ -88,6 +101,7 @@ def main():
     gripper.allowed_planning_time = planning_time
 
     preview_pub = node.create_publisher(DisplayTrajectory, "display_planned_path", 1)
+    robot_state_pub = node.create_publisher(DisplayRobotState, "display_robot_state", 1)
 
     # MultiThreadedExecutor + ReentrantCallbackGroup: pymoveit2's plan()/
     # wait_until_executed() block the calling thread via rclpy.spin_once()
@@ -113,31 +127,73 @@ def main():
             display.trajectory_start.joint_state = current_state
         preview_pub.publish(display)
 
-    def confirm(step_name: str) -> str:
-        """Returns 'execute', 'skip', or 'abort'."""
+    def publish_goal_ghost(position, quat) -> bool:
+        """IK-solve the goal and publish it as a full ghost robot state.
+        Returns False if no IK solution exists (in which case there's
+        nothing meaningful to show, and planning would fail too)."""
+        ik_solution = arm.compute_ik(position=position, quat_xyzw=quat)
+        if ik_solution is None:
+            return False
+
+        # Merge the IK solution's arm joints on top of the last-known full
+        # joint state, so joints outside the "arm" group (the gripper) don't
+        # render at a stale/zeroed position in the ghost.
+        base_state = arm.joint_state
+        names = list(base_state.name) if base_state is not None else []
+        positions = list(base_state.position) if base_state is not None else []
+        for name, pos in zip(ik_solution.name, ik_solution.position):
+            if name in names:
+                positions[names.index(name)] = pos
+            else:
+                names.append(name)
+                positions.append(pos)
+
+        display = DisplayRobotState()
+        display.state.joint_state = JointState(name=names, position=positions)
+        robot_state_pub.publish(display)
+        return True
+
+    def prompt(message: str) -> str:
+        """Returns 'proceed', 'skip', or 'abort'."""
         if not interactive:
-            return "execute"
+            return "proceed"
         # Logged (not just passed to input()'s prompt arg) so the message is
         # guaranteed to appear even under `ros2 launch`, whose line-buffered,
         # per-process output prefixing never flushes an unterminated prompt
         # string. input() itself is still only reliable under `ros2 run` --
         # `ros2 launch` does not consistently forward the terminal's stdin to
         # a launched node.
-        logger.info(
-            f"[{step_name}] Plan ready -- check RViz. "
-            "Type Enter/e to execute, s to skip, or q to abort, then press Enter."
-        )
+        logger.info(f"{message} Type Enter/e to proceed, s to skip, or q to abort, then press Enter.")
         while True:
             answer = input().strip().lower()
-            if answer in ("", "e", "execute"):
-                return "execute"
+            if answer in ("", "e", "execute", "proceed"):
+                return "proceed"
             if answer in ("s", "skip"):
                 return "skip"
             if answer in ("q", "quit", "abort"):
                 return "abort"
-            print("Please enter Enter/e to execute, s to skip, or q to abort.")
+            print("Please enter Enter/e to proceed, s to skip, or q to abort.")
 
-    def run_step(moveit_interface, step_name: str, plan_fn: Callable[[], Optional[JointTrajectory]]) -> bool:
+    def run_step(
+        moveit_interface, step_name: str, plan_fn: Callable[[], Optional[JointTrajectory]],
+        goal_pose=None,
+    ) -> bool:
+        if goal_pose is not None:
+            position, quat = goal_pose
+            if not publish_goal_ghost(position, quat):
+                logger.error(f"No IK solution for the goal at step '{step_name}' -- planning would fail too.")
+                return False
+            decision = prompt(
+                f"[{step_name}] Goal state published to 'display_robot_state' -- "
+                "check the ghost robot in RViz before planning."
+            )
+            if decision == "abort":
+                logger.warn("Aborted by user.")
+                shutdown(1)
+            if decision == "skip":
+                logger.warn(f"Step '{step_name}' skipped by user (before planning).")
+                return True
+
         logger.info(f"Planning step '{step_name}'...")
         trajectory = plan_fn()
         if trajectory is None:
@@ -145,7 +201,7 @@ def main():
             return False
 
         publish_preview(moveit_interface, trajectory)
-        decision = confirm(step_name)
+        decision = prompt(f"[{step_name}] Plan ready -- check the preview in RViz.")
         if decision == "abort":
             logger.warn("Aborted by user.")
             shutdown(1)
@@ -187,9 +243,11 @@ def main():
 
     if not run_step(gripper, "open gripper (initial)", lambda: plan_gripper(gripper_open_position)):
         return shutdown(1)
-    if not run_step(arm, "move to pregrasp", lambda: plan_arm_pose(pregrasp_pos, grasp_quat)):
+    if not run_step(arm, "move to pregrasp", lambda: plan_arm_pose(pregrasp_pos, grasp_quat),
+                     goal_pose=(pregrasp_pos, grasp_quat)):
         return shutdown(1)
-    if not run_step(arm, "descend to grasp", lambda: plan_arm_pose(grasp_pos, grasp_quat, cartesian=True)):
+    if not run_step(arm, "descend to grasp", lambda: plan_arm_pose(grasp_pos, grasp_quat, cartesian=True),
+                     goal_pose=(grasp_pos, grasp_quat)):
         return shutdown(1)
     if not run_step(gripper, "close gripper on stick", lambda: plan_gripper(gripper_grasp_position)):
         return shutdown(1)
@@ -200,9 +258,11 @@ def main():
         touch_links=["Fixed_Gripper", "Moving_Jaw", "End_Effector"],
     )
 
-    if not run_step(arm, "lift to unlock", lambda: plan_arm_pose(unlock_pos, grasp_quat, cartesian=True)):
+    if not run_step(arm, "lift to unlock", lambda: plan_arm_pose(unlock_pos, grasp_quat, cartesian=True),
+                     goal_pose=(unlock_pos, grasp_quat)):
         return shutdown(1)
-    if not run_step(arm, "move to place", lambda: plan_arm_pose(place_pos, place_quat)):
+    if not run_step(arm, "move to place", lambda: plan_arm_pose(place_pos, place_quat),
+                     goal_pose=(place_pos, place_quat)):
         return shutdown(1)
     if not run_step(gripper, "open gripper at place", lambda: plan_gripper(gripper_open_position)):
         return shutdown(1)
@@ -214,7 +274,8 @@ def main():
         frame_id=base_frame,
     )
 
-    run_step(arm, "retreat", lambda: plan_arm_pose(retreat_pos, place_quat))
+    run_step(arm, "retreat", lambda: plan_arm_pose(retreat_pos, place_quat),
+             goal_pose=(retreat_pos, place_quat))
 
     logger.info("Pick-and-place sequence complete.")
     shutdown(0)

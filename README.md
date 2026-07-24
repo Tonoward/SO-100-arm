@@ -333,6 +333,41 @@ ros2 service call /so_arm_100_driver/toggle_torque  std_srvs/srv/Trigger {}  # f
 ros2 service call /so_arm_100_driver/record_position std_srvs/srv/Trigger {} # dump current ticks
 ```
 
+### ⚠️ Servo-level EEPROM angle limits (separate from `zero_ticks`/URDF limits)
+
+Feetech STS3215 servos enforce their **own** `MinAngleLimit`/`MaxAngleLimit`
+(EEPROM registers 9–12), completely independent of this repo's URDF joint
+limits or `calibration.yaml`. If a servo's stored limit is narrower than the
+range you actually need, MoveIt will accept and send the trajectory
+normally, but the servo firmware itself will refuse to move past its
+internal limit — `arm_controller` then times out waiting for a goal that can
+never be reached (`waitForExecution timed out` /
+`Controller is taking too long to execute trajectory`), even though nothing
+is physically or mechanically blocking the joint.
+
+This was found (and fixed) on this specific arm: five of the six servos had
+narrow leftover limits (likely from a prior LeRobot-style calibration, which
+also writes to this EEPROM — see above), with `Wrist_Pitch`'s `MinAngleLimit`
+alone accounting for a hard stop at **-21.45°**. All six were reset to
+`0`/`4095` (i.e. disabled — matches what `Wrist_Roll` already had), leaving
+this repo's URDF joint limits as the sole range authority, as intended.
+
+If you hit an unexplained timeout at a specific angle again (on this arm or
+after swapping a servo), check/fix it directly against the servo, with
+`ros2_control_node` and anything else holding the serial port **stopped**
+first (register access needs exclusive use of the port):
+
+```cpp
+// Registers (SMS_STS.h): MIN_ANGLE_LIMIT_L=9, MAX_ANGLE_LIMIT_L=11, LOCK=55
+sm_st.readWord(id, 9);   // current MinAngleLimit
+sm_st.readWord(id, 11);  // current MaxAngleLimit
+// to fix: unLockEprom(id) -> writeWord(id, 9, 0) -> writeWord(id, 11, 4095) -> LockEprom(id)
+```
+(`sm_st` is an `SMS_STS` instance from the vendored `SCServo_Linux` SDK,
+`so_arm_100_hardware/include/SCServo_Linux/`; servo IDs 1–6 map to
+`Shoulder_Rotation, Shoulder_Pitch, Elbow, Wrist_Pitch, Wrist_Roll, Gripper`
+in that order.)
+
 ## Position correction & live tuning
 
 Three independent, live-tunable ROS2 parameters on the `/so_arm_100_driver`
