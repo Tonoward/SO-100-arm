@@ -20,15 +20,30 @@ pick_and_place_node:
   ros__parameters:
     base_frame: "base_link"
 
+    home:
+      # Folded rest pose -- matches the SRDF "home" named state for the `arm`
+      # group. Order: Shoulder_Rotation, Shoulder_Pitch, Elbow, Wrist_Pitch,
+      # Wrist_Roll.
+      joint_positions: [0.0, -1.745, 1.5, 1.25, 1.5708]
+
     stick:
       size: [0.0060, 0.0060, 0.1]   # x, y, z (meters) -- 6.0mm x 6.0mm x 100mm
-      pose: [0.379, -0.026, 0.064, 0.0, 0.0, 0.0]  
+      pose: [0.379, -0.026, 0.064, 0.0, 0.0, 0.0]
 
     grasp:
+      # Pregrasp is a directly-verified JOINT-SPACE target (found by hand in
+      # RViz's Joints tab), not derived from stick.pose -- a joint-space goal
+      # can't fail on IK/Cartesian reachability the way a pose target can,
+      # since there's nothing to solve for, only joint-limit checks against
+      # values you already confirmed are fine. Order matches home above.
+      # Values: Shoulder_Rotation=-92deg, Shoulder_Pitch=30deg, Elbow=-4deg,
+      # Wrist_Pitch=-26deg, Wrist_Roll=90deg.
+      pregrasp_joint_positions: [-1.6057, 0.5236, -0.0698, -0.4538, 1.5708]
+
       # Gripper target pose relative to stick.pose (composed as stick_pose *
-      # offset), so it moves with the stick if you relocate the hole.
+      # offset), so it moves with the stick if you relocate the hole. Still
+      # used for the lower-to-stick Cartesian step below pregrasp.
       offset: [0.0, 0.0, 0.03, 0.0, 1.5708, 0.0]   # TODO: tune -- guess: grasp 3cm up the stick, gripper pointing down
-      pregrasp_lift: 0.05     # meters, straight up (world Z) above the grasp pose before descending
       lift_height: 0.05       # meters, straight up (world Z) after closing, to clear the hole
       gripper_open_position: 0.7854    # radians, Gripper joint value when open (matches the SRDF "open" state)
       gripper_grasp_position: -0.1745   # radians, Gripper joint value when closed on the stick -- TODO: tune live
