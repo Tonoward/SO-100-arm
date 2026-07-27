@@ -1,55 +1,97 @@
-# Hardcoded pick-and-place waypoints. All poses are [x, y, z, roll, pitch, yaw]
-# in meters/radians, expressed in `base_frame` (base_link is world-fixed here).
+# Hardcoded pick-and-place waypoints. Every arm step below is fully
+# config-driven: its target AND its planning mode ("joint" vs a straight-line
+# Cartesian path). No code changes needed to retune a value or switch a
+# step's mode -- just edit this file and relaunch.
 #
-# Tuning workflow (same idea as calibration.yaml's zero_trim/gravity_coefficient):
-# 1. Launch with the arm in fake/slow mode first if possible, or with
-#    velocity_scaling turned down (default 0.2 below).
-# 2. Watch RViz: the "stick" collision object appears at stick.pose. Nudge
-#    stick.pose (position, and rpy if the stick isn't upright) until the box
-#    lines up with the real stick sitting in the platform hole.
-# 3. Nudge grasp.offset (expressed IN THE STICK'S OWN FRAME) until the arm's
-#    planned grasp pose has the gripper jaws straddling the stick at a sane
-#    height/orientation. This is a relative offset, so once it's right it
-#    stays right even if you later move stick.pose (e.g. different hole).
-# 4. Tune gripper.grasp_position empirically: start slightly open, close
-#    further until the jaws just grip the 6.5mm stick without crushing it.
-# 5. Tune place.pose to wherever "in front of the robot" should be.
-# No rebuild needed for any of this -- just edit this file and relaunch.
+# All joint angles (joint_positions, pose's roll/pitch/yaw, and the gripper
+# open/grasp positions) are in DEGREES here -- matching what you read off
+# RViz's Joints tab -- and converted to radians internally by the node.
+# Positions/translations (meters) are unaffected.
+#
+# Step modes:
+#   joint              - joint_positions (5 degrees): OMPL joint-space goal.
+#                         Robust (only checks joint limits against values you
+#                         already verified), but the Cartesian path the
+#                         end-effector takes in between is NOT controlled --
+#                         it could arc sideways. Use for free-space moves.
+#   cartesian_relative - translation [dx, dy, dz] (meters, world frame)
+#                         added to the arm's ACTUAL current pose (read via
+#                         FK at plan time, not assumed), orientation held
+#                         fixed. Straight-line path. Use when the path SHAPE
+#                         matters, e.g. withdrawing something from a snug
+#                         hole -- a joint-space goal can jam it sideways.
+#   cartesian_absolute - pose [x, y, z, roll, pitch, yaw] (meters for xyz,
+#                         degrees for rpy, base_frame): straight-line path
+#                         to a fixed target. Can fail on IK/reachability the
+#                         way a joint target can't (nothing to solve for
+#                         there) -- prefer "joint" unless the path shape
+#                         specifically matters.
+#
+# Tuning workflow:
+# 1. For "joint" steps: in RViz's Joints tab, drag to a pose, verify it
+#    looks right, read the joint values (degrees) off the sliders, paste
+#    directly into joint_positions -- no conversion needed.
+# 2. For "cartesian_relative" steps: translation is just how far to move
+#    from wherever the arm actually is when that step runs -- tune the
+#    distance, not a pose.
+# 3. gripper_open_position_deg / gripper_grasp_position_deg: tune
+#    empirically -- start slightly open, close further until the jaws just
+#    grip the stick without crushing it.
 
 pick_and_place_node:
   ros__parameters:
     base_frame: "base_link"
 
-    home:
-      # Folded rest pose -- matches the SRDF "home" named state for the `arm`
-      # group. Order: Shoulder_Rotation, Shoulder_Pitch, Elbow, Wrist_Pitch,
-      # Wrist_Roll.
-      joint_positions: [0.0, -1.745, 1.5, 1.25, 1.5708]
-
     stick:
       size: [0.0060, 0.0060, 0.1]   # x, y, z (meters) -- 6.0mm x 6.0mm x 100mm
-      pose: [0.379, -0.026, 0.064, 0.0, 0.0, 0.0]
+      pose: [0.379, -0.026, 0.064, 0.0, 0.0, 0.0]   # visualization/collision only, doesn't drive any step (rpy still radians)
+
+    steps:
+      home:
+        mode: "joint"
+        # Folded rest pose -- matches the SRDF "home" named state.
+        joint_positions: [0.0, -99.98, 85.94, 71.62, 90.0]
+
+      pregrasp:
+        mode: "joint"
+        joint_positions: [-92.0, 30.0, -4.0, -26.0, 90.0]
+
+      lower:
+        mode: "joint"
+        # gripper open, jaws around the stick
+        joint_positions: [-92.0, 54.0, -9.0, -45.0, 90.0]
+
+      lift:
+        mode: "cartesian_relative"
+        # Straight up in world Z from wherever the arm actually is right
+        # after grasping. Must clear the 5mm hole depth with real margin.
+        translation: [0.0, 0.0, 0.03]
+
+      place:
+        mode: "joint"
+        joint_positions: [0.0, 68.0, -17.0, -51.0, 90.0]
+
+      retreat:
+        mode: "joint"
+        joint_positions: [0.0, 29.0, 63.0, -92.0, 90.0]
 
     grasp:
-      # Pregrasp is a directly-verified JOINT-SPACE target (found by hand in
-      # RViz's Joints tab), not derived from stick.pose -- a joint-space goal
-      # can't fail on IK/Cartesian reachability the way a pose target can,
-      # since there's nothing to solve for, only joint-limit checks against
-      # values you already confirmed are fine. Order matches home above.
-      # Values: Shoulder_Rotation=-92deg, Shoulder_Pitch=30deg, Elbow=-4deg,
-      # Wrist_Pitch=-26deg, Wrist_Roll=90deg.
-      pregrasp_joint_positions: [-1.6057, 0.5236, -0.0698, -0.4538, 1.5708]
+      gripper_open_position_deg: 30.0    # Gripper joint value when open
+      gripper_grasp_position_deg: -10.0   # Gripper joint value when closed on the stick
 
-      # Gripper target pose relative to stick.pose (composed as stick_pose *
-      # offset), so it moves with the stick if you relocate the hole. Still
-      # used for the lower-to-stick Cartesian step below pregrasp.
-      offset: [0.0, 0.0, 0.03, 0.0, 1.5708, 0.0]   # TODO: tune -- guess: grasp 3cm up the stick, gripper pointing down
-      lift_height: 0.05       # meters, straight up (world Z) after closing, to clear the hole
-      gripper_open_position: 0.7854    # radians, Gripper joint value when open (matches the SRDF "open" state)
-      gripper_grasp_position: -0.1745   # radians, Gripper joint value when closed on the stick -- TODO: tune live
-
-    place:
-      pose: [0.0, -0.50, 0.15, 0.0, 1.5708, 0.0]   # TODO: tune -- where "in front of the robot" should be
+    grasp_verification:
+      # If true, after closing the gripper the actual settled Gripper joint
+      # position is compared against gripper_grasp_position. Stopping short
+      # of the commanded value (by more than gap_threshold) means the jaws
+      # hit resistance -- decent evidence something is actually between
+      # them. Reaching all the way to the commanded value means they likely
+      # closed on nothing. On a failed check you're prompted to attach
+      # anyway (override), skip attaching, or abort -- it never silently
+      # decides for you.
+      # If false, skip the check entirely and always attach (pure
+      # assumption -- the previous behavior).
+      enabled: true
+      gap_threshold: 0.1   # radians (~5.7deg) -- TODO: tune against the real 6mm stick
 
     velocity_scaling: 0.2       # keep slow for initial real-hardware testing
     acceleration_scaling: 0.2

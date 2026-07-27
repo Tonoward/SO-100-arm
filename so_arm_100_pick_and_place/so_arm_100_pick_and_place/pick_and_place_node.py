@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Hardcoded pick-and-place sequence (no perception, no closed loop): home,
-grasp a stick at a fixed pose, lift it clear of its mounting hole, and move
-it to a fixed place pose. All waypoints come from config/pick_and_place.yaml
--- see that file for the tuning workflow.
+"""Hardcoded pick-and-place sequence (no perception): home, grasp a stick at
+a fixed pose, lift it clear of its mounting hole, and move it to a fixed
+place pose. Every arm step's waypoint AND planning mode is fully
+config-driven from config/pick_and_place.yaml (`steps.<name>.mode`: "joint"
+for a directly-verified joint-space target, or "cartesian_relative" /
+"cartesian_absolute" for a straight-line Cartesian path when the path shape
+matters, not just the destination) -- retuning or switching a step's mode is
+a pure YAML edit, no code changes. Joint angles (joint_positions, pose's
+roll/pitch/yaw, and the gripper open/grasp positions) are given in the yaml
+as DEGREES -- matching how you'd read them off RViz's Joints tab -- and
+converted to radians here before being sent to MoveIt. See that file for the
+tuning workflow.
 
 Built on pymoveit2 (ros-humble-pymoveit2), since no compiled Python MoveIt
 bindings (moveit_commander / moveit_py) are available on this ROS2 Humble
@@ -17,7 +25,16 @@ abort the whole run; only Enter actually triggers execution. Run via
 `ros2 run`, not `ros2 launch`, if the Enter-key prompts don't seem to reach
 this process -- launch's stdin passthrough can be unreliable with multiple
 nodes.
+
+Grasp verification (`grasp_verification.enabled`, default true): since
+there's no force/tactile sensing, "did we actually grab the stick" is
+inherently a guess. When enabled, the gripper's actual settled position
+after closing is compared against the commanded closed position -- stopping
+well short means it hit resistance (probably holding something); reaching
+the commanded value means it likely closed on nothing. Set to false to skip
+the check and always attach (pure assumption).
 """
+import math
 from threading import Thread
 from typing import Callable, Optional
 
@@ -29,7 +46,7 @@ from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
 
 from pymoveit2 import MoveIt2, MoveIt2Gripper
 
-from so_arm_100_pick_and_place.pose_utils import compose, vec6_to_pos_quat
+from so_arm_100_pick_and_place.pose_utils import rpy_to_quat, vec6_to_pos_quat
 
 ARM_JOINT_NAMES = [
     "Shoulder_Rotation",
@@ -49,20 +66,60 @@ def main():
     node = Node("pick_and_place_node")
 
     base_frame = node.declare_parameter("base_frame", "base_link").value
-    home_joint_positions = list(node.declare_parameter(
-        "home.joint_positions", [0.0, -1.745, 1.5, 1.25, 1.5708]).value)
     stick_size = list(node.declare_parameter("stick.size", [0.0065, 0.0065, 0.1]).value)
     stick_pose_v = list(node.declare_parameter(
         "stick.pose", [0.25, 0.0, 0.05, 0.0, 0.0, 0.0]).value)
-    pregrasp_joint_positions = list(node.declare_parameter(
-        "grasp.pregrasp_joint_positions", home_joint_positions).value)
-    grasp_offset_v = list(node.declare_parameter(
-        "grasp.offset", [0.0, 0.0, 0.03, 0.0, 1.5708, 0.0]).value)
-    lift_height = node.declare_parameter("grasp.lift_height", 0.05).value
-    gripper_open_position = node.declare_parameter("grasp.gripper_open_position", 0.7854).value
-    gripper_grasp_position = node.declare_parameter("grasp.gripper_grasp_position", 0.2).value
-    place_pose_v = list(node.declare_parameter(
-        "place.pose", [0.0, 0.25, 0.15, 0.0, 1.5708, 0.0]).value)
+
+    def declare_arm_step(name: str, default_mode: str, **defaults):
+        """Every arm step is declared with the same fields regardless of
+        which `mode` it actually uses -- unused fields just keep harmless
+        defaults. `mode` selects how plan_arm_step() interprets them:
+          - "joint": joint_positions (5 DEGREES in the yaml, converted to
+            radians here) -- OMPL joint-space goal, robust but the
+            Cartesian path in between is unconstrained.
+          - "cartesian_relative": translation [dx, dy, dz] (meters, world
+            frame) added to the arm's actual CURRENT pose (via FK), with
+            orientation held fixed. Straight-line Cartesian path -- use
+            this when the path shape matters (e.g. withdrawing from a
+            snug hole), not just the destination.
+          - "cartesian_absolute": pose [x, y, z, roll, pitch, yaw] (meters
+            for xyz, DEGREES for rpy in the yaml, base_frame) --
+            straight-line Cartesian path to a fixed target. Can fail on
+            IK/reachability the way a joint target can't; prefer "joint"
+            unless the path shape matters.
+
+        Defaults passed in are in the same units as the yaml (degrees for
+        joint_positions / pose's rpy) -- kept that way so the in-code
+        fallback values read the same as what you'd type into the yaml.
+        """
+        mode = node.declare_parameter(f"steps.{name}.mode", default_mode).value
+        joint_positions_deg = list(node.declare_parameter(
+            f"steps.{name}.joint_positions", defaults.get("joint_positions", [0.0] * 5)).value)
+        translation = list(node.declare_parameter(
+            f"steps.{name}.translation", defaults.get("translation", [0.0, 0.0, 0.0])).value)
+        pose_deg = list(node.declare_parameter(
+            f"steps.{name}.pose", defaults.get("pose", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])).value)
+        joint_positions = [math.radians(v) for v in joint_positions_deg]
+        pose = pose_deg[:3] + [math.radians(v) for v in pose_deg[3:]]
+        return {"mode": mode, "joint_positions": joint_positions, "translation": translation, "pose": pose}
+
+    steps_cfg = {
+        "home": declare_arm_step("home", "joint", joint_positions=[0.0, -99.98, 85.94, 71.62, 90.0]),
+        "pregrasp": declare_arm_step(
+            "pregrasp", "joint", joint_positions=[-92.0, 30.0, -4.0, -26.0, 90.0]),
+        "lower": declare_arm_step(
+            "lower", "joint", joint_positions=[-91.0, 54.0, -9.0, -45.0, 90.0]),
+        "lift": declare_arm_step("lift", "cartesian_relative", translation=[0.0, 0.0, 0.03]),
+        "place": declare_arm_step(
+            "place", "joint", joint_positions=[0.0, 68.0, -17.0, -51.0, 90.0]),
+        "retreat": declare_arm_step(
+            "retreat", "joint", joint_positions=[0.0, 29.0, 63.0, -92.0, 90.0]),
+    }
+
+    gripper_open_position = math.radians(node.declare_parameter("grasp.gripper_open_position_deg", 30.0).value)
+    gripper_grasp_position = math.radians(node.declare_parameter("grasp.gripper_grasp_position_deg", -10.0).value)
+    grasp_verification_enabled = node.declare_parameter("grasp_verification.enabled", True).value
+    grasp_gap_threshold = node.declare_parameter("grasp_verification.gap_threshold", 0.1).value
     velocity_scaling = node.declare_parameter("velocity_scaling", 0.2).value
     acceleration_scaling = node.declare_parameter("acceleration_scaling", 0.2).value
     planning_time = node.declare_parameter("planning_time", 5.0).value
@@ -163,25 +220,103 @@ def main():
             logger.error(f"Execution failed at step '{step_name}'")
         return ok
 
-    def plan_arm_joints(positions):
-        return arm.plan(joint_positions=list(positions), joint_names=ARM_JOINT_NAMES)
+    def get_current_ee_pose():
+        pose_stamped = arm.compute_fk()
+        if pose_stamped is None:
+            return None
+        p = pose_stamped.pose.position
+        o = pose_stamped.pose.orientation
+        return (p.x, p.y, p.z), (o.x, o.y, o.z, o.w)
 
-    def plan_arm_pose(position, quat, cartesian: bool = False):
-        return arm.plan(
-            position=position, quat_xyzw=quat, frame_id=base_frame,
-            cartesian=cartesian, max_step=0.01, cartesian_fraction_threshold=0.95,
-        )
+    def plan_arm_step(step_cfg):
+        mode = step_cfg["mode"]
+        if mode == "joint":
+            return arm.plan(joint_positions=step_cfg["joint_positions"], joint_names=ARM_JOINT_NAMES)
+
+        if mode == "cartesian_relative":
+            current_pose = get_current_ee_pose()
+            if current_pose is None:
+                logger.error("Could not compute the current end-effector pose for a cartesian_relative step.")
+                return None
+            current_pos, current_quat = current_pose
+            dx, dy, dz = step_cfg["translation"]
+            target_pos = (current_pos[0] + dx, current_pos[1] + dy, current_pos[2] + dz)
+            return arm.plan(
+                position=target_pos, quat_xyzw=current_quat, frame_id=base_frame,
+                cartesian=True, max_step=0.005, cartesian_fraction_threshold=0.95,
+            )
+
+        if mode == "cartesian_absolute":
+            x, y, z, roll, pitch, yaw = step_cfg["pose"]
+            return arm.plan(
+                position=(x, y, z), quat_xyzw=rpy_to_quat(roll, pitch, yaw), frame_id=base_frame,
+                cartesian=True, max_step=0.005, cartesian_fraction_threshold=0.95,
+            )
+
+        raise ValueError(f"Unknown step mode: '{mode}' (expected joint, cartesian_relative, or cartesian_absolute)")
 
     def plan_gripper(position: float):
         return gripper.plan(joint_positions=[position])
 
-    stick_pos, stick_quat = vec6_to_pos_quat(stick_pose_v)
-    grasp_offset_pos, grasp_offset_quat = vec6_to_pos_quat(grasp_offset_v)
-    grasp_pos, grasp_quat = compose(stick_pos, stick_quat, grasp_offset_pos, grasp_offset_quat)
-    place_pos, place_quat = vec6_to_pos_quat(place_pose_v)
+    def plan_grasp_gripper():
+        # Closing the gripper on the stick necessarily means the jaws end up
+        # colliding with it -- that's the point of a grasp, but by default
+        # the planner treats any collision as invalid and refuses to find a
+        # path into it.
+        #
+        # This used to call MoveIt2.allow_collisions() to modify the Allowed
+        # Collision Matrix instead, but that goes through a synchronous
+        # Client.call() deep inside pymoveit2 (the only place in this script
+        # that does, everywhere else uses the manual spin_once-loop pattern)
+        # and was observed to hang indefinitely after several prior
+        # plan/execute cycles -- move_group's own logs confirmed the request
+        # never even arrived, and the identical call succeeded instantly in
+        # an isolated repro, so the difference is specifically about this
+        # long-lived process's accumulated state, not the ACM logic itself.
+        # Removing the object during the close-plan sidesteps the collision
+        # question entirely and only uses add/remove_collision_box, a plain
+        # topic publish -- the same reliable, already-proven mechanism used
+        # for the initial "Adding stick collision object" step below.
+        arm.remove_collision_object(id="stick")
+        trajectory = gripper.plan(joint_positions=[gripper_grasp_position])
+        arm.add_collision_box(
+            id="stick", size=stick_size, position=stick_pos, quat_xyzw=stick_quat, frame_id=base_frame,
+        )
+        return trajectory
 
-    unlock_pos = (grasp_pos[0], grasp_pos[1], grasp_pos[2] + lift_height)
-    retreat_pos = (place_pos[0], place_pos[1], place_pos[2] + lift_height)
+    def attach_stick():
+        logger.info("Attaching stick to the end effector.")
+        arm.attach_collision_object(
+            id="stick", link_name="Fixed_Gripper",
+            touch_links=["Fixed_Gripper", "Moving_Jaw", "End_Effector"],
+        )
+
+    def check_grasp_success() -> bool:
+        """No force/tactile sensing exists, so this is a heuristic, not
+        proof: compare the gripper's actual settled position against the
+        commanded closed position. Stopping well short of it means the
+        jaws hit resistance -- decent evidence of a real grasp."""
+        if not grasp_verification_enabled:
+            return True
+        state = gripper.joint_state
+        if state is None or "Gripper" not in state.name:
+            logger.warn("No gripper joint state available for grasp verification -- assuming success.")
+            return True
+        actual = state.position[state.name.index("Gripper")]
+        gap = abs(actual - gripper_grasp_position)
+        if gap < grasp_gap_threshold:
+            logger.warn(
+                f"Grasp verification: gripper reached within {gap:.3f} rad of the commanded "
+                f"closed position ({gripper_grasp_position:.3f} rad) -- likely closed on nothing."
+            )
+            return False
+        logger.info(
+            f"Grasp verification: gripper stopped {gap:.3f} rad short of the commanded closed "
+            "position -- likely holding the stick."
+        )
+        return True
+
+    stick_pos, stick_quat = vec6_to_pos_quat(stick_pose_v)
 
     logger.info("Adding stick collision object to the planning scene.")
     arm.add_collision_box(
@@ -191,33 +326,46 @@ def main():
 
     # 1. Start position is wherever the arm already is -- no action needed.
     # 2-3. Home.
-    if not run_step(arm, "home position", lambda: plan_arm_joints(home_joint_positions)):
+    if not run_step(arm, "home position", lambda: plan_arm_step(steps_cfg["home"])):
         return shutdown(1)
     # 4-5. Open gripper.
     if not run_step(gripper, "open gripper", lambda: plan_gripper(gripper_open_position)):
         return shutdown(1)
-    # 6-7. Pregrasp -- joint-space target verified directly in RViz, not
-    # derived from stick.pose, so it can't fail on Cartesian/IK reachability.
-    if not run_step(arm, "move to pregrasp", lambda: plan_arm_joints(pregrasp_joint_positions)):
+    # 6-7. Pregrasp.
+    if not run_step(arm, "move to pregrasp", lambda: plan_arm_step(steps_cfg["pregrasp"])):
         return shutdown(1)
     # 8-9. Lower to the stick, gripper still open.
-    if not run_step(arm, "lower to stick", lambda: plan_arm_pose(grasp_pos, grasp_quat, cartesian=True)):
+    if not run_step(arm, "lower to stick", lambda: plan_arm_step(steps_cfg["lower"])):
         return shutdown(1)
     # 10-11. Grasp: close the gripper on the stick.
-    if not run_step(gripper, "grasp stick (close gripper)", lambda: plan_gripper(gripper_grasp_position)):
+    if not run_step(gripper, "grasp stick (close gripper)", plan_grasp_gripper):
         return shutdown(1)
 
-    logger.info("Attaching stick to the end effector.")
-    arm.attach_collision_object(
-        id="stick", link_name="Fixed_Gripper",
-        touch_links=["Fixed_Gripper", "Moving_Jaw", "End_Effector"],
-    )
+    if check_grasp_success():
+        attach_stick()
+    else:
+        decision = prompt(
+            "Grasp verification failed -- attach anyway (assume success), "
+            "skip attaching (continue without it), or abort?"
+        )
+        if decision == "abort":
+            logger.warn("Aborted by user.")
+            return shutdown(1)
+        if decision == "proceed":
+            logger.info("Attaching stick anyway (forced by user despite failed check).")
+            attach_stick()
+        else:
+            logger.warn("Continuing without attaching the stick -- it will not visually follow the gripper.")
 
-    # 12-13. Lift the stick clear of the hole.
-    if not run_step(arm, "lift stick", lambda: plan_arm_pose(unlock_pos, grasp_quat, cartesian=True)):
+    # 12-13. Lift the stick clear of the hole. steps.lift.mode defaults to
+    # cartesian_relative (straight line in task space) rather than joint,
+    # since the stick sits in a 5mm-deep hole and needs to pull straight
+    # out -- a joint-space goal only guarantees the destination, not the
+    # path shape in between, and can jam it against the hole's sides.
+    if not run_step(arm, "lift stick", lambda: plan_arm_step(steps_cfg["lift"])):
         return shutdown(1)
     # 14-15. Move to the place location.
-    if not run_step(arm, "place stick", lambda: plan_arm_pose(place_pos, place_quat)):
+    if not run_step(arm, "place stick", lambda: plan_arm_step(steps_cfg["place"])):
         return shutdown(1)
 
     # Not in the original numbered list, but needed to actually release the
@@ -228,12 +376,14 @@ def main():
 
     logger.info("Detaching stick.")
     arm.detach_collision_object(id="stick")
-    arm.add_collision_box(
-        id="stick", size=stick_size, position=place_pos, quat_xyzw=place_quat,
-        frame_id=base_frame,
-    )
+    current_pose = get_current_ee_pose()
+    if current_pose is not None:
+        pos, quat = current_pose
+        arm.add_collision_box(id="stick", size=stick_size, position=pos, quat_xyzw=quat, frame_id=base_frame)
+    else:
+        logger.warn("Could not compute the current end-effector pose -- stick collision box not re-added.")
 
-    run_step(arm, "retreat", lambda: plan_arm_pose(retreat_pos, place_quat))
+    run_step(arm, "retreat", lambda: plan_arm_step(steps_cfg["retreat"]))
 
     logger.info("Pick-and-place sequence complete.")
     shutdown(0)
