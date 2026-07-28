@@ -224,6 +224,15 @@ A hardcoded (no perception, no closed loop) grasp/lift/place sequence: grab a
 fixed-size stick from a known pose, lift it clear of its mounting hole, and
 move it to a fixed place pose.
 
+> **Where this is heading:** the demo is the first step of a stick-assembly
+> system driven from a Blender addon. Current status, hard-won hardware
+> findings, and the full implementation plan live in
+> [`docs/ROS2_IMPLEMENTATION_PLAN.md`](docs/ROS2_IMPLEMENTATION_PLAN.md),
+> [`docs/BLENDER_ADDON_PLAN.md`](docs/BLENDER_ADDON_PLAN.md) and
+> [`docs/BRIDGE_PROTOCOL.md`](docs/BRIDGE_PROTOCOL.md). **The parameter table
+> below is out of date** (it predates the `steps.<name>.mode` config scheme in
+> `config/pick_and_place.yaml`) — see issue D2 in the ROS2 plan.
+
 **Mount_Platform.** A static plate the robot's `base_link` sits on/in, with a
 hole for the stick — separate from the SO-100 assembly's own `Base` link.
 Defined in
