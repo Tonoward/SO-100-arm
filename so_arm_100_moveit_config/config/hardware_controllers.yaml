@@ -45,7 +45,12 @@ arm_controller:
     hold_position_on_startup: true
     constraints:
       stopped_velocity_tolerance: 0.01
-      goal_time: 5.0
+      # See the matching comment in ros2_controllers.yaml -- raised well
+      # beyond the old 5.0s to give Cartesian-planned trajectories (always
+      # timestamped at full, unscaled speed on ROS2 Humble) enough real
+      # settling time before the controller gives up and reports
+      # GOAL_TOLERANCE_VIOLATED, even though the arm did physically arrive.
+      goal_time: 15.0
       # trajectory (path) tolerance is disabled (0.0 = unconstrained, per JTC
       # convention) rather than tightened: gravity compensation deliberately
       # commands a position offset from the naive/uncompensated interpolated
@@ -82,7 +87,7 @@ gripper_controller:
     allow_partial_joints_goal: true
     constraints:
       stopped_velocity_tolerance: 0.01
-      goal_time: 2.0
+      goal_time: 15.0   # see arm_controller's constraints comment above
       Gripper:
         goal: 0.05
         trajectory: 0.0

@@ -8,8 +8,27 @@
 # seconds between clicking Plan and Execute can exceed the 0.01 rad default
 # even though nothing is actually wrong. Loosened to match the project's
 # existing 0.15 rad path tolerance (see hardware_controllers.yaml etc.).
+#
+# allowed_execution_duration_scaling / allowed_goal_duration_margin: MoveIt
+# cancels execution if the controller doesn't report success within
+# (computed_duration * scaling + margin). This matters specifically for
+# Cartesian-planned trajectories (computeCartesianPath): on ROS2 Humble,
+# that service has no velocity/acceleration scaling support at all (added
+# only in Iron), so a Cartesian trajectory is always timed at full,
+# unscaled speed regardless of MoveGroupInterface's velocity/acceleration
+# scaling settings -- while the real servos still move at the hardware
+# interface's own conservative configured speed. A small Cartesian move
+# (e.g. so_arm_100_pick_and_place's straight-up "lift" step) can therefore
+# get an expected-duration estimate of ~1s and get canceled
+# (STATUS_ABORTED / "waitForExecution timed out") well before the real,
+# correctly-slow hardware actually finishes -- not a torque/force problem,
+# a scheduling one. Both loosened well beyond MoveIt's defaults (1.2x /
+# 0.5s) to give real execution enough headroom regardless of how fast a
+# Cartesian plan's own (unreliable, unscaled) timestamps claim it should be.
 trajectory_execution:
   allowed_start_tolerance: 0.15
+  allowed_execution_duration_scaling: 3.0
+  allowed_goal_duration_margin: 15.0
 
 moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
 

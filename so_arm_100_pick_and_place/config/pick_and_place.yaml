@@ -59,13 +59,13 @@ pick_and_place_node:
       lower:
         mode: "joint"
         # gripper open, jaws around the stick
-        joint_positions: [-92.0, 54.0, -9.0, -45.0, 90.0]
+        joint_positions: [-93.0, 54.0, -7.0, -46.0, 90.0]
 
       lift:
         mode: "cartesian_relative"
         # Straight up in world Z from wherever the arm actually is right
         # after grasping. Must clear the 5mm hole depth with real margin.
-        translation: [0.0, 0.0, 0.03]
+        translation: [0.0, 0.0, 0.05]
 
       place:
         mode: "joint"

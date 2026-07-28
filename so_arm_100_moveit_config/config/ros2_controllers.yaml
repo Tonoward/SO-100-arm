@@ -46,7 +46,21 @@ arm_controller:
     allow_partial_joints_goal: true
     constraints:
       stopped_velocity_tolerance: 0.01
-      goal_time: 2.0          # seconds after trajectory end to reach goal; raise if arm needs more settling time
+      # This is the CONTROLLER's own settling grace period -- separate from
+      # (and in addition to) moveit_controllers.yaml's
+      # allowed_execution_duration_scaling/allowed_goal_duration_margin,
+      # which only governs when move_group's trajectory_execution_manager
+      # gives up waiting. Even after that fix, a Cartesian-planned
+      # trajectory (computeCartesianPath has no velocity/acceleration
+      # scaling support on ROS2 Humble, so it's always timestamped at full,
+      # unscaled speed) can still genuinely reach its goal several seconds
+      # later than its own nominal end time, since the real hardware moves
+      # at its configured slower pace regardless. If goal_time is too
+      # tight, the controller reports GOAL_TOLERANCE_VIOLATED / ABORTED
+      # even though the arm did physically get there -- observed exactly
+      # this with the pick-and-place demo's Cartesian "lift" step (overshot
+      # the old 2.0s budget by ~2s). Raised well beyond that margin.
+      goal_time: 15.0
       # trajectory (path) tolerance is disabled (0.0 = unconstrained, per JTC
       # convention) rather than tightened: gravity compensation deliberately
       # commands a position offset from the naive/uncompensated interpolated
@@ -82,7 +96,7 @@ gripper_controller:
     allow_partial_joints_goal: true
     constraints:
       stopped_velocity_tolerance: 0.01
-      goal_time: 2.0
+      goal_time: 15.0   # see arm_controller's constraints comment above
       # trajectory tolerance disabled for the same reason as the arm (the
       # integral/gravity correction deliberately offsets the commanded path).
       Gripper:
