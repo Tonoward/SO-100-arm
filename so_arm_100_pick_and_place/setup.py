@@ -25,6 +25,8 @@ setup(
     entry_points={
         'console_scripts': [
             'pick_and_place_node = so_arm_100_pick_and_place.pick_and_place_node:main',
+            'verify_kinematics = so_arm_100_pick_and_place.verify_kinematics_node:main',
+            'verify_kinematics_hardware = so_arm_100_pick_and_place.verify_kinematics_hardware_node:main',
         ],
     },
 )

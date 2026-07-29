@@ -56,9 +56,10 @@ The full comparison is retained below as the record of why.
 
 Three options were considered:
 
-### Option A — Live bridge (originally proposed)
-Blender holds a TCP connection to a ROS2 bridge node and commands the robot
-step by step.
+### Option A — Live bridge (originally proposed) ❌ rejected
+Blender holds a network socket (TCP, *the protocol* — not to be confused with
+Tool Center Point, which is what "TCP" means everywhere else in these docs)
+open to a ROS2 bridge node, and commands the robot step by step.
 
 - ➕ Instant validation feedback while designing.
 - ➕ Live robot mirroring and live build progress in the viewport.
@@ -70,7 +71,7 @@ step by step.
   and address configuration.
 - ➖ Nothing is reproducible: no artifact to inspect, diff, version, or replay.
 
-### Option B — Pure slicer (user's proposal)
+### Option B — Pure slicer (user's proposal) ❌ superseded by C
 Blender exports a build file; ROS2 loads and executes it. No connection ever.
 
 - ➕ Radically simpler addon: no networking at all.
@@ -83,7 +84,7 @@ Blender exports a build file; ROS2 loads and executes it. No connection ever.
   loop is where the user will spend most of their time.
 - ➖ No robot mirroring, no live progress (the user asked for mirroring, QB3).
 
-### Option C — Slicer **+ shared kinematics module** ✅ recommended
+### Option C — Slicer **+ shared kinematics module** ✅ CHOSEN — this is the design
 Same as B, **plus** the one insight that removes B's only real drawback:
 
 > **Reachability validation does not need the robot, ROS, or a network — it
@@ -141,10 +142,13 @@ so100_builder/
 ├── __init__.py             register()/unregister(), module wiring
 ├── prefs.py                AddonPreferences
 ├── properties.py           PropertyGroups on Scene and Object
-├── kinematics/             *** VENDORED, unmodified, from so_arm_100_kinematics ***
+├── kinematics/             *** VENDORED VERBATIM from so_arm_100_kinematics ***
+│   ├── __init__.py         exports + __version__
 │   ├── chain.py            FK + closed-form IK (ROS2 doc §9.3)
+│   ├── constants.py        URDF-derived geometry, limits, grasp offset
 │   ├── envelope.py         reachability queries
-│   └── VERSION             so a mismatch with the robot side is detectable
+│   └── VERSION             must match __version__; recorded in every build file
+│                           (see that package's own README.md for the rules)
 ├── core/
 │   ├── transform.py        Blender world <-> base_link metres (B5, B6)
 │   ├── sticks.py           mesh edges -> StickSpec; joint allowance; cut list
@@ -534,8 +538,12 @@ handlers are the most common cause of addon crashes across Blender versions.
   coordinates in `base_link` and correct stick lengths, verified by hand.
 
 ### Phase B — Kinematics & validation
-- [ ] Vendor `so_arm_100_kinematics` (available after ROS2 Phase 1); add the
-      version check.
+- [ ] Vendor `so_arm_100_kinematics` — ✅ **it exists, is tested, and is
+      validated on real hardware**; it ships alongside these docs. Follow the
+      vendoring rules in that package's own `README.md` (copy the inner
+      module dir + `VERSION`, not the ROS packaging files; never fork it).
+- [ ] Write `kinematics_version` into every exported build file and check it
+      on import, per [`BRIDGE_PROTOCOL.md`](BRIDGE_PROTOCOL.md) Part A.
 - [ ] `core/validate.py`; per-stick verdicts with specific reasons.
 - [ ] Viewport overlay: build volume, reachability, status colours.
 - **Done when:** dragging a vertex outside the envelope turns that stick red

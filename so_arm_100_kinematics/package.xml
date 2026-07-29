@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>so_arm_100_kinematics</name>
+  <version>0.1.0</version>
+  <description>
+    Closed-form FK/IK for the SO-100 5-DOF arm chain. Pure Python, zero ROS
+    dependency by design -- this package is meant to be vendored verbatim
+    into the Blender addon (so_arm_100_stick_assembly project), so it must
+    run unmodified in Blender's bundled interpreter as well as here.
+  </description>
+  <maintainer email="tono_war@hotmail.com">tonoward</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

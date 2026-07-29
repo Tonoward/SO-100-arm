@@ -19,6 +19,18 @@ settings in this repo look arbitrary and are not: they are the outcome of
 long hardware debugging sessions. Each one has a comment in-file explaining
 why. Preserve those comments.
 
+### ⚠ Terminology: "TCP" means two different things
+
+An unfortunate acronym collision, so be careful when reading or searching:
+
+| Term | Meaning | Status |
+|---|---|---|
+| **TCP** (default, and the only one used in §7–§9) | **Tool Center Point** — the `End_Effector` link, the point on the gripper whose position the arm actually controls. What `fk()` returns and `ik()` takes. | ✅ Core concept |
+| **TCP** (networking) | Transmission Control Protocol — a network socket | ❌ **Not used.** Appears only in `BRIDGE_PROTOCOL.md` Part B and the Option A comparison, both kept as a record of a rejected design. |
+
+Unless the sentence is explicitly about sockets, ports, or `BRIDGE_PROTOCOL.md`
+Part B, **TCP means Tool Center Point.**
+
 ---
 
 ## 1. Project goal
@@ -194,33 +206,53 @@ this machine, so it is usually unavailable.
 
 ## 5. Target architecture
 
+**There is no live connection between Blender and ROS2** (Option C, §5.2).
+The two sides are coupled only by a file, and by a kinematics module that is
+byte-identical on both sides.
+
 ```
-┌────────────────────────┐   JSON lines / TCP   ┌──────────────────────────┐
-│  Blender addon         │◄────────────────────►│ so_arm_100_blender_bridge│
-│  (Blender's Python)    │   see BRIDGE_        │  bridge_node  (rclpy)    │
-│  NO rclpy — see §5.2   │   PROTOCOL.md        └────────────┬─────────────┘
-└────────────────────────┘                                   │ ROS actions/srvs
-                                                             ▼
-                                              ┌──────────────────────────────┐
-                                              │ so_arm_100_pick_and_place    │
-                                              │   stick_task_server_node     │
-                                              │     ├── motion.py  (MoveIt2) │
-                                              │     ├── sequences.py         │
-                                              │     └── scene.py (collision) │
-                                              └────────────┬─────────────────┘
-                                                           │ MoveIt
-                                                           ▼
-                                     move_group ─► arm_controller / gripper_controller
-                                                           ▼
-                                                  so_arm_100_hardware (STS3215)
+  ┌─────────────────────────────────────┐
+  │  Blender addon (so100_builder)      │      Blender's own Python.
+  │    design mesh → expand → order     │      Runs offline, Linux or
+  │    → validate → export              │      Windows, no ROS present.
+  │    ├── kinematics/  ◄──────────────────┐   VENDORED VERBATIM
+  └──────────────┬──────────────────────┘  │   (pure Python, no ROS,
+                 │ writes                  │    no numpy)
+                 ▼                         │
+      ┌──────────────────────────┐         │
+      │  <name>.build.json       │         │   the ONLY interface:
+      │  <name>.status.json      │         │   BRIDGE_PROTOCOL.md Part A
+      └──────────────┬───────────┘         │
+                 │ reads / writes status   │
+                 ▼                         │
+  ┌──────────────────────────────────┐     │
+  │ so_arm_100_pick_and_place        │     │
+  │   stick_task_server_node         │     │
+  │     ├── motion.py  (MoveIt2)     │     │
+  │     ├── sequences.py             │     │
+  │     └── scene.py   (collision)   │     │
+  └──────────────┬───────────────────┘     │
+                 │ uses                    │
+  ┌──────────────▼───────────────────┐     │
+  │ so_arm_100_kinematics  ──────────────────┘  ✅ BUILT & TESTED
+  │   fk / ik / envelope  (no ROS)   │
+  └──────────────┬───────────────────┘
+                 │ MoveIt
+                 ▼
+   move_group ─► arm_controller / gripper_controller
+                 ▼
+        so_arm_100_hardware (STS3215)
 ```
+
+The build file moves by whatever means is convenient — shared folder, USB
+stick, git, scp. Nothing in the design cares.
 
 ### 5.1 New / changed packages
 
 | Package | Type | Contents |
 |---|---|---|
 | `so_arm_100_stick_msgs` | **new**, `ament_cmake` | `action/PickStick.action`, `action/PlaceStick.action`, `action/ReleaseStick.action`, `srv/ValidatePlacements.srv`, `srv/SetBuildPlan.srv`, `srv/GoToNamed.srv`, `msg/StickSpec.msg`, `msg/TaskState.msg` |
-| `so_arm_100_kinematics` | **new**, `ament_python` | Closed-form 5-DOF IK/FK for this chain + reachability sampling (see §9) |
+| `so_arm_100_kinematics` | ✅ **BUILT & TESTED**, `ament_python` | Closed-form 5-DOF FK/IK + reachability (§9). `chain.py`, `constants.py`, `envelope.py`. **Pure Python, `math` is its only import** — verified to run under `env -i` with no ROS sourced, which is the condition it faces inside Blender. 11 unit tests pass, including recovering all five hand-tuned hardware poses from their own FK output. |
 | `so_arm_100_pick_and_place` | **refactor** | split the monolith into `motion.py`, `sequences.py`, `scene.py`; keep `pick_and_place_node.py` working as-is; add `stick_task_server_node.py` |
 | `so_arm_100_blender_bridge` | ❌ **not being built** | Made unnecessary by the Option C decision (§5.2). Blender exports a build file instead of holding a socket. |
 
@@ -714,26 +746,49 @@ Each phase is independently testable and leaves the system working.
 - **Done when:** the RViz model visually matches reality, and the stick
   collision box lands on the real stick.
 
-### Phase 1 — Kinematics & reachability map *(do this early — it sizes the art)*
+### Phase 1 — Kinematics & reachability map — 🟡 PARTLY DONE
 
 Promoted ahead of the refactor because it answers "what can actually be
 built", which the user needs **before** designing a sculpture (§9.5).
 
-- [ ] New `so_arm_100_kinematics`: closed-form FK + IK exactly as in §9.3.
-      **Pure Python, zero ROS imports** — so it can be unit-tested standalone
-      *and* vendored into the Blender addon unchanged. This single decision is
-      what lets Blender validate designs offline, on Windows, with no ROS.
-- [ ] Unit tests: reproduce the five tuned poses in `pick_and_place.yaml`
-      (the `lower` pose must land within a few mm of `stick.pose`), and
-      round-trip IK→FK over a grid.
-- [ ] Grasp-offset transform (§8.2) and the jaw-clearance test (§8.2).
-- [ ] Reachability map generator: sweep position × stick orientation, **with**
-      self-collision and table collision, cache to a compact file, plus a CLI
-      to regenerate it.
-- [ ] Publish the resulting usable build volume and confirm the final choice
-      with the user (§9.5 recommends 300 × 120 × 200 mm at Y = −380 mm).
-- **Done when:** the map exists, and the tuned `place` pose in the yaml is
+- [x] ✅ **`so_arm_100_kinematics` built** — closed-form FK + IK exactly as in
+      §9.3. **Pure Python, `math` is the only import**, verified to run under
+      `env -i` with no ROS sourced (the condition it faces in Blender).
+- [x] ✅ **Unit tests pass (11/11)**, in `test/test_chain.py`: the `lower`
+      pose's FK lands within 6 mm of `stick.pose`; `ik()` recovers **all five**
+      tuned poses' original joint angles from their own FK output (within
+      0.5°, not merely "some valid solution"); a 343-point grid round-trips;
+      `Wrist_Roll` is proven not to move the TCP.
+- [x] ✅ **Cross-checked against MoveIt's own KDL solver** reading the live
+      `robot_description` — an independent implementation, which is what
+      catches a transcription error or a URDF that has moved on without
+      `constants.py`. Max error **0.000 mm** (FK) / **0.002 mm** (IK) over 80
+      random samples. Tool: `ros2 run so_arm_100_pick_and_place
+      verify_kinematics` (needs only `moveit.launch.py`, i.e. `move_group`
+      alone — no controllers, no serial port, safe with hardware plugged in).
+- [x] ✅ **Validated on real hardware.** The arm was commanded to
+      `ik()`-computed targets and physically reached them, confirmed against
+      a collision box placed at the intended coordinates. Tool:
+      `ros2 run so_arm_100_pick_and_place verify_kinematics_hardware`
+      (plan → RViz ghost preview → Enter-gated execute; never auto-moves).
+      ⚠ Re-run this after Phase 0 changes `mount_platform_joint`'s origin.
+- [ ] Grasp-offset transform (§8.2) and the jaw-clearance test (§8.2) —
+      `GRASP_OFFSET_M` is in `constants.py` but the transform helper and the
+      swept-jaw collision test are not written yet.
+- [ ] Reachability map generator: `envelope.sweep_envelope()` exists and gives
+      min/max radius per height, but does **not** yet model self-collision,
+      the mount platform, the table, or placed sticks. Add those, plus a
+      cached output file and a CLI to regenerate it.
+- [ ] Re-confirm the build volume against the collision-aware map (§9.5's
+      numbers are IK-only and are an upper bound).
+- **Done when:** the collision-aware map exists and the tuned `place` pose is
   marked reachable by it.
+
+⚠ **Two caveats recorded in the code, not to be forgotten:**
+- `GRASP_OFFSET_M = 0.051` is *derived*, not measured — Phase 0's ruler check.
+- The `stick_roll_rad = 0 ⇒ Wrist_Roll = π/2` mapping is a **software
+  convention** chosen to match the tuned poses, not something the URDF
+  dictates. Confirm the sign on hardware before trusting it for a real build.
 
 ### Phase 2 — Refactor without behaviour change
 - [ ] Split `pick_and_place_node.py` into `motion.py` (MoveIt2 wrapper, step

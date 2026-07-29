@@ -52,6 +52,7 @@ re-validates and executes it; ROS2 writes status back to a sidecar.
   "source": "tower_v3.blend",
   "frame": "base_link",
   "units": "meters",
+  "kinematics_version": "1.0.0",
   "stock": { "section_m": [0.00645, 0.00645], "joint_allowance_m": 0.00325,
              "length_range_m": [0.080, 0.150] },
   "build_volume": { "min": [-0.12, -0.45, 0.0], "max": [0.12, -0.29, 0.20] },
@@ -100,6 +101,7 @@ validation check apply to these expanded coordinates.
 
 | Field | Meaning |
 |---|---|
+| `kinematics_version` | `so_arm_100_kinematics.__version__` of the copy that generated this file. **ROS2 must compare it against its own and refuse to execute on mismatch** — the two sides sharing a kinematics module is the entire basis for trusting Blender's validation, so a drifted copy is a hard error, not a warning. |
 | `order` | Build index. Must be dense and match array position. |
 | `length_m` | The **physical stick length** = ‖tip − base‖ = what the human cuts and loads into the feeder |
 | `shared_ends` | 0, 1 or 2 — how many of this stick's ends meet another stick. Informational; the gaps are already baked into `base`/`tip`. |
