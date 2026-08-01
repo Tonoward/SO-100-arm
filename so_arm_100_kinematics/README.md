@@ -8,7 +8,7 @@ That is a hard design constraint, not an accident — this package is
 designs offline, on Windows, with no ROS installed. See
 `docs/BLENDER_ADDON_PLAN.md` §2 in the parent repo.
 
-Current version: **1.0.0** (see `VERSION` and `__init__.__version__`).
+Current version: **1.2.0** (see `VERSION` and `__init__.__version__`).
 
 ---
 
@@ -30,6 +30,16 @@ except sak.Unreachable as exc:
 
 # Cheap boolean form, tries both elbow branches:
 ok, reason = sak.is_reachable((0.30, -0.35, 0.10), 0.0)
+
+# Grasp orientation: turn a stick's own base/tip into IK-consumable
+# (tool_elevation_rad, stick_roll_rad), or straight to joint angles.
+joints = sak.solve_stick_placement((0.0, -0.36, 0.0), (0.0, -0.36, 0.110))
+
+# Jaw clearance: will the gripper clip already-placed sticks reaching this
+# joint? Exclude the stick(s) THIS one glues onto -- see jaw_clearance.py's
+# docstring for why.
+clear, reason, clearance_m, _idx = sak.check_jaw_clearance(
+    (0.0, -0.36, 0.0), (0.0, -0.36, 0.110), placed_sticks=[])
 ```
 
 **"TCP" here means Tool Center Point** (the `End_Effector` link) — never the
@@ -51,9 +61,16 @@ network protocol. See the terminology note in
 
 Validated at three independent levels:
 
-1. **Offline unit tests** (`test/test_chain.py`, 11 tests) — `ik()` recovers
-   all five hand-tuned hardware poses' original joint angles from their own
-   FK output, to <0.1°. Not "some valid solution" — the *same* one.
+1. **Offline unit tests** (`test/test_chain.py` + `test/test_grasp.py` +
+   `test/test_jaw_clearance.py`, 42 tests) — `ik()` recovers all five
+   hand-tuned hardware poses' original joint angles from their own FK
+   output, to <0.1°. Not "some valid solution" — the *same* one.
+   `test_grasp.py` additionally locks in the grasp-orientation transform's
+   exact real-world regression cases (an ill-conditioned elevation branch, a
+   too-tight anchor tolerance, and an unhandled asymmetric `Wrist_Roll`
+   limit — see `grasp.py`'s own docstring). `test_jaw_clearance.py` checks
+   the segment-distance math against known geometric cases (parallel, skew,
+   intersecting, degenerate) and the swept-jaw capsule model itself.
    ```bash
    python3 -m unittest discover -s test
    ```
@@ -86,6 +103,15 @@ Validated at three independent levels:
 - **`envelope.sweep_envelope()` is IK-only.** It does not model
   self-collision, the mount platform, the table, or already-placed sticks.
   It is a fast upper-bound pre-filter, never a final verdict.
+- **`JAW_RADIUS_M` (used by `jaw_clearance.check_jaw_clearance()`) is an
+  estimate, not measured.** Same status as `GRASP_OFFSET_M` — confirm real
+  jaw dimensions in Phase 0. The capsule-vs-capsule model is also a
+  deliberate simplification of the real (roughly box-shaped) jaws and
+  square-section sticks — conservative in most orientations, but not a
+  substitute for MoveIt's own collision checking. See `jaw_clearance.py`'s
+  own docstring for what it does and does not decide (notably: it does
+  **not** know which already-placed stick is this joint's own neighbour —
+  the caller must exclude that one before calling).
 
 ---
 
@@ -113,9 +139,12 @@ only — do **not** copy them into the addon.
 3. **Bump `__version__` *and* `VERSION` together** on any change that alters
    computed results. Build files record `kinematics_version`; a mismatch at
    load time should be a loud error, not a warning.
-4. **Re-run the tests against the vendored copy.** `test/test_chain.py`
-   imports `so_arm_100_kinematics.chain`; after vendoring, change that to
-   the addon's package path. If the tests don't pass in Blender's
-   interpreter, the copy is wrong.
+4. **Re-run the tests against the vendored copy.** `test/test_chain.py`,
+   `test/test_grasp.py` and `test/test_jaw_clearance.py` import
+   `so_arm_100_kinematics.*`; after vendoring, change that to the addon's
+   package path (see `so100_builder/tests/test_kinematics_vendored.py` and
+   `test_kinematics_grasp_vendored.py`, which do exactly this — add a
+   `test_kinematics_jaw_clearance_vendored.py` alongside them). If the
+   tests don't pass in Blender's interpreter, the copy is wrong.
 5. **Keep it numpy-free.** Blender bundles no numpy guarantee. Plain `math`
    only.

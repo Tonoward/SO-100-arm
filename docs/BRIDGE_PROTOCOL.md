@@ -72,8 +72,8 @@ re-validates and executes it; ROS2 writes status back to a sidecar.
     {
       "id": "s_002",
       "order": 1,
-      "base": [0.020, -0.360, 0.11325],
-      "tip":  [0.020, -0.360, 0.22325],
+      "base": [0.020, -0.360, 0.11650],
+      "tip":  [0.020, -0.360, 0.22650],
       "roll_deg": 0.0,
       "length_m": 0.110,
       "shared_ends": 2,
@@ -87,8 +87,23 @@ re-validates and executes it; ROS2 writes status back to a sidecar.
 
 ⚠ **`base` and `tip` are the PHYSICAL stick ends, already inset from the ideal
 mesh vertices** — ROS2 places exactly what it is given and does no gap
-arithmetic. Note the 3.25 mm gap between `s_001`'s tip (z = 0.110) and
-`s_002`'s base (z = 0.11325): that is the glue joint.
+arithmetic. Note the **6.5 mm** gap between `s_001`'s tip (z = 0.110) and
+`s_002`'s base (z = 0.1165): that is the glue joint. The ideal mesh vertex
+they share sits midway at z = 0.11325, and **both** sticks stop 3.25 mm short
+of it — which is why the gap is 2 × 3.25 mm, not 3.25 mm.
+
+*(Corrected 2026-07-28. This example previously read 0.11325 / 0.22325, which
+inset only one of the two ends and so contradicted
+[`BLENDER_ADDON_PLAN.md`](BLENDER_ADDON_PLAN.md) §5.2 and the `required_edge`
+formula in §5.2.1. The formula is authoritative; these numbers now follow it
+and match the addon's output.)*
+
+`s_002` has `shared_ends: 2`, so a further stick meets its tip — that
+neighbour would start at z = 0.2330, its own ideal vertex being z = 0.22975.
+`shared_ends` describes the stick's **final topology**, independent of
+`warnings: ["cantilever"]`, which describes its **temporary support state
+during the build sequence** — at the moment `s_002` is placed, only `s_001`
+supports it; whatever eventually attaches to its tip hasn't been built yet.
 
 `length_m` is the real stick length — what the operator cuts and loads — so
 `‖tip − base‖ == length_m` always, and the 80–150 mm range is checked against

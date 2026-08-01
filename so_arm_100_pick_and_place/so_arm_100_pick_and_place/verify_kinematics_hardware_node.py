@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Moves the REAL arm to a so_arm_100_kinematics-computed joint target,
 gated by the same plan -> RViz ghost preview -> Enter-to-execute workflow as
-pick_and_place_node.py.
+pick_and_place_node.py (now shared via motion.MotionController -- Sec 11
+Phase 2 -- rather than a second, drifting inline copy of the same pattern).
 
 This is the one thing verify_kinematics_node.py cannot do: that script only
 ever calls MoveIt's compute_fk (a pure kinematics query -- no motion, safe to
@@ -34,22 +35,14 @@ the gripper empty, and keep it clear of the feeder stick until you trust a
 result.
 """
 import math
-import sys
-from threading import Thread
 
 import rclpy
-from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
-
-from pymoveit2 import MoveIt2
 
 import so_arm_100_kinematics as sak
+from so_arm_100_pick_and_place.motion import MotionController
 
 ARM_JOINT_NAMES = list(sak.JOINT_NAMES)
-BASE_LINK_NAME = "base_link"
-END_EFFECTOR_NAME = "End_Effector"
-ROBOT_MODEL_ID = "so_arm_100"
 
 # The EXACT FK position of the tuned 'lower' pose (joint_positions
 # [-93, 54, -7, -46, 90] deg from pick_and_place.yaml) -- the one target with
@@ -79,46 +72,15 @@ def main():
     interactive = node.declare_parameter("interactive", True).value
 
     logger = node.get_logger()
-    callback_group = ReentrantCallbackGroup()
 
-    arm = MoveIt2(
-        node=node,
-        joint_names=ARM_JOINT_NAMES,
-        base_link_name=BASE_LINK_NAME,
-        end_effector_name=END_EFFECTOR_NAME,
-        group_name="arm",
-        callback_group=callback_group,
+    motion = MotionController(
+        node,
+        base_frame="base_link",
+        velocity_scaling=velocity_scaling,
+        acceleration_scaling=acceleration_scaling,
+        planning_time=planning_time,
+        interactive=interactive,
     )
-    arm.max_velocity = velocity_scaling
-    arm.max_acceleration = acceleration_scaling
-    arm.allowed_planning_time = planning_time
-
-    preview_pub = node.create_publisher(DisplayTrajectory, "display_planned_path", 1)
-
-    executor = rclpy.executors.MultiThreadedExecutor(4)
-    executor.add_node(node)
-    executor_thread = Thread(target=executor.spin, daemon=True)
-    executor_thread.start()
-    node.create_rate(1.0).sleep()
-
-    def shutdown(code):
-        rclpy.shutdown()
-        executor_thread.join()
-        sys.exit(code)
-
-    def prompt(message):
-        if not interactive:
-            return "proceed"
-        # Logged, not passed as input()'s prompt string, so it's guaranteed
-        # to appear as a complete flushed line -- see pick_and_place_node.py.
-        logger.info(f"{message} Enter/e to execute, q to abort.")
-        while True:
-            answer = input().strip().lower()
-            if answer in ("", "e", "execute", "proceed"):
-                return "proceed"
-            if answer in ("q", "quit", "abort"):
-                return "abort"
-            print("Enter/e to execute, q to abort.")
 
     try:
         joints = sak.ik(
@@ -128,41 +90,23 @@ def main():
         )
     except sak.Unreachable as exc:
         logger.error(f"so_arm_100_kinematics reports this target is unreachable: {exc}")
-        return shutdown(1)
+        return motion.shutdown(1)
 
     logger.info(
         f"Target {target_xyz_m} m, elevation {tool_elevation_deg} deg, roll {stick_roll_deg} deg "
         f"-> joints (deg) = {[round(math.degrees(q), 2) for q in joints]}"
     )
 
-    logger.info("Planning...")
-    trajectory = arm.plan(joint_positions=list(joints), joint_names=ARM_JOINT_NAMES)
-    if trajectory is None:
-        logger.error("MoveIt could not plan to this joint target.")
-        return shutdown(1)
+    def plan_target():
+        return motion.arm.plan(joint_positions=list(joints), joint_names=ARM_JOINT_NAMES)
 
-    display = DisplayTrajectory(model_id=ROBOT_MODEL_ID)
-    display.trajectory.append(RobotTrajectory(joint_trajectory=trajectory))
-    current_state = arm.joint_state
-    if current_state is not None:
-        display.trajectory_start.joint_state = current_state
-    preview_pub.publish(display)
-
-    decision = prompt("Plan ready -- check the ghost preview in RViz against where you expect the target to be.")
-    if decision == "abort":
-        logger.warn("Aborted by user -- no motion commanded.")
-        return shutdown(1)
-
-    arm.execute(trajectory)
-    ok = arm.wait_until_executed()
+    ok = motion.run_step(motion.arm, "move to target", plan_target, allow_skip=False)
     if ok:
         logger.info(
             "Execution OK -- now physically compare the real arm's position "
             f"against the intended target {target_xyz_m} m."
         )
-    else:
-        logger.error("Execution failed -- see move_group's log for the reason.")
-    shutdown(0 if ok else 1)
+    motion.shutdown(0 if ok else 1)
 
 
 if __name__ == "__main__":

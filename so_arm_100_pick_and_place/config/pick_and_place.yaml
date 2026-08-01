@@ -26,6 +26,17 @@
 #                         way a joint target can't (nothing to solve for
 #                         there) -- prefer "joint" unless the path shape
 #                         specifically matters.
+#   stick_spec         - base_xyz_m / tip_xyz_m (meters, base_frame) +
+#                         roll_deg: a stick's own physical ends (the
+#                         StickSpec of ROS2_IMPLEMENTATION_PLAN.md Sec 8.3),
+#                         solved into a joint target by
+#                         so_arm_100_kinematics + stick_spec.py (Sec 11
+#                         Phase 3) instead of a hand-tuned constant. Tries
+#                         base->tip then tip->base automatically before
+#                         giving up (Sec 9.6's Wrist_Roll asymmetry), then
+#                         plans the result as a joint goal, same as "joint"
+#                         mode. See the commented-out example on the
+#                         `place` step below.
 #
 # Tuning workflow:
 # 1. For "joint" steps: in RViz's Joints tab, drag to a pose, verify it
@@ -70,6 +81,19 @@ pick_and_place_node:
       place:
         mode: "joint"
         joint_positions: [0.0, 68.0, -17.0, -51.0, 90.0]
+        # Sec 11 Phase 3's parametric place: switch mode to "stick_spec" and
+        # supply a stick's real base/tip (meters, base_frame) instead of a
+        # hand-tuned joint_positions -- e.g. to reproduce this exact tuned
+        # pose (confirms the computed target lands in the same spot):
+        #   mode: "stick_spec"
+        #   base_xyz_m: [0.0, -0.4296986138400065, -0.017358569868196]
+        #   tip_xyz_m:  [0.0, -0.4296986138400065, 0.092641430131804]
+        #   roll_deg: 0.0
+        # Or to place a real stick from a Blender-exported build file, e.g.
+        # s_004 from SO100BlenderTest.build.build.build.json:
+        #   base_xyz_m: [-0.047115, -0.372278, 0.0]
+        #   tip_xyz_m:  [-0.050317, -0.372278, 0.109952]
+        #   roll_deg: 0.0
 
       retreat:
         mode: "joint"

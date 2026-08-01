@@ -229,9 +229,17 @@ move it to a fixed place pose.
 > findings, and the full implementation plan live in
 > [`docs/ROS2_IMPLEMENTATION_PLAN.md`](docs/ROS2_IMPLEMENTATION_PLAN.md),
 > [`docs/BLENDER_ADDON_PLAN.md`](docs/BLENDER_ADDON_PLAN.md) and
-> [`docs/BRIDGE_PROTOCOL.md`](docs/BRIDGE_PROTOCOL.md). **The parameter table
-> below is out of date** (it predates the `steps.<name>.mode` config scheme in
-> `config/pick_and_place.yaml`) — see issue D2 in the ROS2 plan.
+> [`docs/BRIDGE_PROTOCOL.md`](docs/BRIDGE_PROTOCOL.md).
+
+**Code layout (`so_arm_100_pick_and_place`, Sec 11 Phase 2).** The demo node
+is a thin `main()` over three modules: `motion.py` (the `MoveIt2`/
+`MoveIt2Gripper` wrapper — the one plan → RViz preview → gated prompt →
+execute implementation in the package, also used by
+`verify_kinematics_hardware_node.py`), `scene.py` (the fed stick's
+collision-object lifecycle), and `sequences.py` (the composed step list
+below). `stick_spec.py` (Phase 3) turns a stick's physical base/tip/roll
+into a joint target via `so_arm_100_kinematics`, for the `stick_spec` step
+mode below.
 
 **Mount_Platform.** A static plate the robot's `base_link` sits on/in, with a
 hole for the stick — separate from the SO-100 assembly's own `Base` link.
@@ -266,27 +274,44 @@ ros2 launch so_arm_100_pick_and_place pick_and_place.launch.py
 pick-and-place-specific additions don't risk the generic MoveIt demo.
 
 **Tuning (`so_arm_100_pick_and_place/config/pick_and_place.yaml`).** No
-rebuild needed — edit and relaunch:
+rebuild needed — edit and relaunch. The current schema is the
+`steps.<name>.mode` scheme — every named step (`home`, `pregrasp`, `lower`,
+`lift`, `place`, `retreat`) picks one of four modes:
 
-| Parameter | Meaning |
-|---|---|
-| `stick.size` | Box dimensions in meters — already set to `0.0065 x 0.0065 x 0.1` (6.5mm × 6.5mm × 100mm) |
-| `stick.pose` | `[x, y, z, roll, pitch, yaw]` in `base_link` — where the stick collision object sits. **Placeholder — tune to the real hole location.** |
-| `grasp.offset` | Gripper target pose *relative to `stick.pose`* (composed, not absolute) — where the jaws should close around the stick. **Placeholder — tune live.** |
-| `grasp.pregrasp_lift` / `grasp.lift_height` | Meters, straight up (world Z), before descending / after closing to clear the hole |
-| `grasp.gripper_open_position` / `grasp.gripper_grasp_position` | Gripper joint radians when open / closed on the stick. The closed value can't be computed in advance — tune it live against the real 6.5mm stick |
-| `place.pose` | `[x, y, z, roll, pitch, yaw]` — the drop-off location. **Placeholder — tune to taste.** |
-| `velocity_scaling` / `acceleration_scaling` | Default `0.2` — deliberately slow for initial real-hardware runs |
+| Step mode | Fields it reads | Use when |
+|---|---|---|
+| `joint` | `joint_positions` (5 degrees) | The common case — a directly-verified joint-space target. Robust; the Cartesian path in between is unconstrained. |
+| `cartesian_relative` | `translation` `[dx,dy,dz]` meters, added to the arm's actual current pose | The path *shape* matters, e.g. pulling straight out of the feeder hole (`lift`). |
+| `cartesian_absolute` | `pose` `[x,y,z,roll,pitch,yaw]` (meters/degrees, `base_frame`) | A fixed Cartesian target where the path shape matters. Can fail on reachability the way a joint target can't. |
+| `stick_spec` (Sec 11 Phase 3) | `base_xyz_m` / `tip_xyz_m` (meters, `base_frame`) + `roll_deg` | Drive a step from a stick's real physical ends (a `StickSpec`, `ROS2_IMPLEMENTATION_PLAN.md` §8.3) through `so_arm_100_kinematics`, instead of a hand-tuned constant. Tries base→tip then tip→base automatically (§9.6's `Wrist_Roll` asymmetry) before giving up. See the commented-out example on the yaml's `place` step. |
 
-Tune in this order: (1) `stick.pose` — watch the collision box line up with
-the real stick in RViz; (2) `grasp.offset` — since it's relative, it stays
-correct even if you later move `stick.pose`; (3)
-`grasp.gripper_grasp_position` — empirically, on the real stick; (4)
-`place.pose`.
+Other tunables: `stick.size` / `stick.pose` (the fed stick's collision box —
+`stick.pose` is visualization/collision only, it doesn't drive any step),
+`grasp.gripper_open_position_deg` / `grasp.gripper_grasp_position_deg`
+(tune the closed value empirically against the real stock),
+`grasp_verification.enabled` / `gap_threshold`, `velocity_scaling` /
+`acceleration_scaling` (default `0.2`, deliberately slow for initial
+real-hardware runs), and `interactive`.
 
 Every step (each arm move, each gripper action) checks its MoveIt error code
 and aborts with a logged reason on failure rather than silently continuing —
 watch the terminal running `pick_and_place_node` if a run doesn't finish.
+
+**Timing watchdogs (two independent ones, both tuned generously — see
+`ROS2_IMPLEMENTATION_PLAN.md` §3 findings #2-4).** `computeCartesianPath`
+ignores velocity/acceleration scaling on this ROS2 distro (Humble; fixed in
+Iron), so a Cartesian plan is always timestamped at *full* speed while the
+hardware moves at its own slower, scaled pace — two separate execution-time
+checks would otherwise fire spuriously on a perfectly good execution:
+move_group's own monitor (`allowed_execution_duration_scaling: 3.0`,
+`allowed_goal_duration_margin: 15.0`) and the controllers' own
+`constraints.goal_time: 15.0` (`arm_controller` **and**
+`gripper_controller`, in both `ros2_controllers.yaml` and
+`hardware_controllers.yaml`). A too-tight value on the first shows up as
+`waitForExecution timed out`/`TIMED_OUT`; on the second, as
+`GOAL_TOLERANCE_VIOLATED: Aborted due to goal_time_tolerance exceeding by N
+seconds` **even though the arm physically arrived**. Don't tighten either
+without re-reading `moveit_controllers.yaml`'s header comment first.
 
 ## Calibration
 

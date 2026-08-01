@@ -147,6 +147,8 @@ so100_builder/
 │   ├── chain.py            FK + closed-form IK (ROS2 doc §9.3)
 │   ├── constants.py        URDF-derived geometry, limits, grasp offset
 │   ├── envelope.py         reachability queries
+│   ├── grasp.py            grasp-orientation transform (ROS2 doc §9.6) --
+│   │                       core/validate.py calls this, never reimplements it
 │   └── VERSION             must match __version__; recorded in every build file
 │                           (see that package's own README.md for the rules)
 ├── core/
@@ -205,6 +207,12 @@ That value is half the 6.45 mm section (6.45/2 = 3.225), i.e. each stick stops
 at the *face* of the joint rather than at its centreline — geometrically exact
 for a **90°** joint.
 
+⚠ **3.25 mm is per stick end, so the gap between two stick ends is 6.5 mm.**
+Both sticks meeting at a vertex stop 3.25 mm short of it, from opposite sides.
+Do not read "3.25 mm gap" as the end-to-end distance — that phrasing is what
+put the wrong numbers into [`BRIDGE_PROTOCOL.md`](BRIDGE_PROTOCOL.md) §A.2's
+worked example (corrected 2026-07-28).
+
 ### 5.2.1 ⭐ Mesh expansion — preserve stick length, grow the design
 
 **This is the defining behaviour of the addon.** There are two ways to
@@ -217,7 +225,8 @@ reconcile a mesh with physical sticks, and the user has chosen the second:
 
 So: **the design mesh's edge lengths are the physical stick lengths** — what
 you actually cut. The addon then moves vertices apart so sticks of exactly
-those lengths sit with a 3.25 mm gap at every joint.
+those lengths sit with a 3.25 mm clearance from every shared vertex (so a
+6.5 mm gap between the two stick ends that meet there).
 
 **The inverted-U example, worked through.** Three sticks, all physically
 110 mm:
@@ -242,19 +251,66 @@ vertices and push each vertex along its parent edge's direction by the
 required amount. Every edge lands on its target length exactly, and the
 design's angles are preserved. No solver needed.
 
-**Structures with closed loops — approximate.** In the inverted U, raising
-both top vertices by 3.25 mm fixes the uprights but leaves the top edge at
-110 mm; widening it to 116.5 mm then tilts the uprights by ~1.6° and pushes
-them to 113.30 mm. Every edge cannot be satisfied simultaneously.
+**Structures with closed loops — usually still exact, sometimes not.** In the
+inverted U, raising both top vertices by 3.25 mm fixes the uprights but
+leaves the top edge at 110 mm; widening it to 116.5 mm then tilts the
+uprights by ~1.6°.
+
+*(Corrected 2026-07-28 against the implementation: that tilt does **not**
+leave a residual. Tilting shortens the uprights' vertical extent, and the
+solver simply raises the top vertices to compensate, landing all three edges
+on target — 113.25 / 116.50 / 113.25 mm — to better than 0.001 mm. The
+earlier claim here — that the uprights end at 113.30 mm and that "every edge
+cannot be satisfied simultaneously" — came from stopping the reasoning one
+step early. A 4-vertex U has enough freedom to be exact. Genuinely
+over-constrained cases do exist — see the flat-square example below — but
+this is not one of them.)*
 
 Solve it as **iterative constraint relaxation** (position-based dynamics
-style): repeatedly, for each edge, move both endpoints symmetrically along the
-edge to correct its length error; pin grounded vertices. A few dozen
-iterations converge to sub-0.1 mm residuals for structures of this scale.
+style): repeatedly, for each edge, move both endpoints along the edge to
+correct its length error. A few dozen iterations converge to sub-0.1 mm
+residuals for structures of this scale.
+
+✅ **Grounded vertices: SLIDE, decided 2026-07-28.** A grounded vertex is
+**locked to z = 0 but free to move in XY**. It cannot rise or sink — the base
+plate is physical — but it may slide across the plate as the design grows.
+
+This replaces an earlier "pin grounded vertices" instruction, which was
+wrong: fully pinning them makes **any closed loop lying on the base plate
+unexpandable**. Every vertex of a square drawn flat on the plate would be
+immobile, so none of its edges could grow at all and all four would report a
+−6.5 mm residual. That contradicts §5.2.1's whole premise that the design
+grows to fit the sticks. Under SLIDE the square simply solves exactly, coming
+out slightly larger — which is the intended behaviour.
+
+**Where the two modes actually differ.** Not on the inverted U above: both
+PIN and SLIDE reach the same answer there (all three edges on target, the
+uprights tilted ~1.65°), because two free top vertices already give the
+solver enough room. The difference appears only when pinning removes *all*
+freedom — a closed loop lying flat on the plate. A square drawn on the floor
+has four grounded vertices and no free ones:
+
+| | PIN | SLIDE |
+|---|---|---|
+| square flat on the plate | no vertex can move; all 4 edges −6.5 mm; unbuildable | solves exactly, square comes out 6.5 mm larger |
+| wireframe cube's bottom ring | 4 sticks flagged | solves exactly |
+| inverted U | exact, uprights tilt ~1.65° | exact, uprights tilt ~1.65° |
+
+Both remain available — the addon exposes PIN as a toggle — but **SLIDE is
+the default**.
+
+⚠ **Note which components this changes.** A component that is a tree with at
+most one grounded vertex is still solved exactly by the outward walk of the
+acyclic case; the ground mode only matters once a second anchor or a mesh
+cycle closes a loop. Pinning is what makes the base plate behave as an extra
+edge, so *two* pinned feet turn even an acyclic mesh into the looped case —
+which is exactly why the inverted U above is treated as looped despite having
+4 vertices and 3 edges.
 
 **Report the residual per edge.** Any edge that cannot reach its target within
-tolerance is a design the sticks will not physically fit — the user must know
-which one, not discover it at the glue gun.
+tolerance (a genuinely over-constrained case, e.g. the flat square under PIN)
+is a design the sticks will not physically fit — the user must know which
+one, not discover it at the glue gun.
 
 **Optional simplification: uniform growth.** Add 3.25 mm at *every* end,
 jointed or not — so every edge grows by exactly 6.5 mm and free ends simply
@@ -359,6 +415,17 @@ finished tall structure is blocked. Because the arm reaches outward
 horizontally (ROS2 doc §9.4), the secondary rule is **build far-from-robot
 first, near-to-robot last** within a layer.
 
+⚠ **A design constraint found while implementing this (2026-07-29), worth
+knowing before drawing a sculpture: tangential horizontals are cheap, radial
+horizontals are expensive.** A horizontal stick pointing *at or away from*
+the robot needs the tool vertical, which §9.4 says costs ~150 mm of reach —
+and that is enough to matter. A square-ring tower at the nominal build
+position came out with **exactly its two radial rungs unreachable at every
+height and stick length tried**, while its two tangential rungs were fine.
+A "ladder" (stacked inverted-Us, all horizontals tangential) builds cleanly
+in the same space. No ordering can fix this: it is a property of the
+placement, not the sequence.
+
 **C3 — Jaw clearance.** The jaws sit only ~51 mm above the stick's base — i.e.
 right at the glue joint. The cone around each target vertex must be clear.
 Placing the sticks that share a vertex in a bad order can make the last one
@@ -405,7 +472,7 @@ Notes:
 | **Loop closure** — the last stick of a triangle/quad | Must fit exactly between two already-glued vertices; absorbs all accumulated error | Flag as high-risk; suggest cutting ~1 mm short (ROS2 doc §10.2) |
 | **Floating component** — a sub-graph with no grounded vertex | Unbuildable | Hard error, name the component |
 | **High-valence vertex** — many sticks meeting at one point | Jaw clearance collapses | Warn with the computed clearance |
-| **Out-of-plane tilt** | 5-DOF arm cannot lean a stick sideways (ROS2 doc §9.4) | Hard error per stick, with the offending angle |
+| **Out-of-plane tilt** | ⚠ **Corrected 2026-07-28 (ROS2 doc §9.4) — this IS reachable**, contrary to what this row used to say. Still comparatively untested territory (relative to a full self-collision model), so worth a second look. | Warn (not a hard error), with the offending angle, so the user can "Check By Eye" and decide — see `so100_builder/core/validate.py`'s `WARN_OUT_OF_PLANE_TILT` |
 
 ---
 
@@ -415,11 +482,17 @@ Notes:
 
 ```
 for stick in order:
-    reachable?        -> closed-form IK (ROS2 doc §9.3)
-    orientation ok?   -> tool axis must lie in the arm plane (§9.4)
-    jaw clearance?    -> swept jaw box vs. already-placed sticks
-    within envelope?  -> cached reachability map
-    -> verdict, then add to the simulated scene
+    reachable?        -> closed-form IK, exhaustive over both elevation
+                          branches and both elbow branches, each candidate
+                          verified by round-tripping through fk() (ROS2 doc
+                          Sec 9.3/9.6; Sec 9.4's "tool axis must stay in the
+                          arm plane" governs the TOOL, not the stick -- an
+                          out-of-plane STICK tilt is reachable, see Sec 9.4's
+                          correction)
+    jaw clearance?    -> swept jaw box vs. already-placed sticks [Phase C]
+    within envelope?  -> cached reachability map [viewport overlay only]
+    -> verdict (+ a warning, not a hard fail, for an out-of-plane tilt --
+       still comparatively untested territory), then add to the scene
 ```
 
 Per-stick verdicts drive everything the user sees: list icons, viewport
@@ -430,6 +503,12 @@ height"` rather than `"unreachable"`.
 ⚠ **This is an upper bound, not a guarantee.** It does not model self-collision
 of the whole arm, the mount platform, or MoveIt's own path planning. ROS2
 re-validates on load and MoveIt has the final word.
+
+✅ **Phase B implemented (2026-07-28) as permissive**, decided with the user:
+trust the closed-form IK's own success/failure, including for out-of-plane
+tilts (§9.4's correction). MoveIt re-validates on load regardless, so an
+over-eager Blender-side rejection only costs a design iteration for nothing.
+See `so100_builder/README.md`'s Phase B section for the full derivation.
 
 ---
 
@@ -537,35 +616,112 @@ handlers are the most common cause of addon crashes across Blender versions.
 - **Done when:** a wireframe cube produces 12 sticks with correct metre
   coordinates in `base_link` and correct stick lengths, verified by hand.
 
-### Phase B — Kinematics & validation
-- [ ] Vendor `so_arm_100_kinematics` — ✅ **it exists, is tested, and is
-      validated on real hardware**; it ships alongside these docs. Follow the
-      vendoring rules in that package's own `README.md` (copy the inner
-      module dir + `VERSION`, not the ROS packaging files; never fork it).
-- [ ] Write `kinematics_version` into every exported build file and check it
+### Phase B — Kinematics & validation — ✅ DONE 2026-07-28
+- [x] Vendor `so_arm_100_kinematics` — **exists, tested, validated on real
+      hardware**, now including `grasp.py` (v1.1.0 — the grasp-orientation
+      transform, ROS2 doc §9.6). Follow the vendoring rules in that
+      package's own `README.md` (copy the inner module dir + `VERSION`, not
+      the ROS packaging files; never fork it).
+- [x] Write `kinematics_version` into every exported build file and check it
       on import, per [`BRIDGE_PROTOCOL.md`](BRIDGE_PROTOCOL.md) Part A.
-- [ ] `core/validate.py`; per-stick verdicts with specific reasons.
-- [ ] Viewport overlay: build volume, reachability, status colours.
+- [x] `core/validate.py`; per-stick verdicts with specific reasons. Calls
+      `grasp.solve_stick_orientation()` directly rather than reimplementing
+      it — see the Phase D note below on why that matters.
+- [x] Viewport overlay: build volume, reachability, status colours.
 - **Done when:** dragging a vertex outside the envelope turns that stick red
   with a specific reason, live, with no ROS running.
 
-### Phase C — Build order
-- [ ] `core/order.py` per §6, including the §6.2 warnings.
-- [ ] Chunked execution so large meshes don't freeze the UI.
+✅ **Decided permissive** (see §7's note below): trust the closed-form IK's
+own success/failure, including for out-of-plane tilts — MoveIt re-validates
+on load regardless, so an over-eager rejection here only costs a design
+iteration for nothing.
+
+### Phase C — Build order — ✅ DONE 2026-07-29
+- [x] `core/order.py` per §6, including the §6.2 warnings.
+- [x] Chunked execution so large meshes don't freeze the UI
+      (`OrderSolver.step()` driven from a modal operator's timer).
 - **Done when:** a multi-layer test mesh produces an order that is
   support-valid and fully buildable, and a deliberately-floating component is
-  correctly rejected.
+  correctly rejected. ✅ `tests/test_order.py`'s `TestMultiLayerTower` and
+  `TestFloatingComponent`; support-validity is re-checked structurally by
+  replaying the order, not taken from the solver's own bookkeeping.
 
-### Phase D — Export & the build loop
-- [ ] Build-file export + cut-list export.
-- [ ] JSON status sidecar round-trip; resume a partially-built job.
-- [ ] `Build` panel with the next-stick-to-load display.
+⚠ **Jaw clearance (C3) is a *soft* constraint.** Its numbers are estimates
+(§8.2's "~20 mm across" / "out to ~60 mm"), not measurements — Phase 0 still
+owes the real jaw envelope. So a clash steers the search but never refuses
+to build: if no order avoids it, the stick is placed with a `jaw_clearance`
+warning naming the offender and the gap. Only *reachability* hard-gates a
+candidate, matching the permissive policy chosen for Phase B.
+
+⚠ **"base" becomes structural here**, superseding Phase B's
+reachability-driven auto-flip. With one end supported the structure wins
+(flipping would leave the stick floating); with both supported the solver
+picks whichever orientation validates, which reproduces auto-flip's benefit
+with no conflict. Re-extracting clears the order, so **Compute Build Order
+must be re-run after any re-extraction.**
+
+### Phase D — Export & the build loop — 🟢 SOFTWARE DONE 2026-07-29, awaiting hardware
+- [x] Build-file export + cut-list export (`io/build_file.py`, `ops/build.py`).
+- [x] JSON status sidecar round-trip; resume a partially-built job.
+- [x] `Build` panel with the next-stick-to-load display.
 - **Done when:** a design is exported, built on real hardware, and reopening
   the `.blend` shows the correct placed/pending state.
+  🟡 **The hardware run is still outstanding** — it cannot be automated here.
+  Everything either side of it is covered: the file conforms to
+  [`BRIDGE_PROTOCOL.md`](BRIDGE_PROTOCOL.md) Part A (round-tripped through a
+  loader that enforces format, version and `order` density), and the
+  resume path is tested by writing a sidecar as ROS2 would, wiping the
+  in-`.blend` progress, syncing, and checking the right sticks come back
+  `placed`.
 
-### Phase E — Preview & polish
-- [ ] Robot mirror rig driven by the shared FK; scrub through the build order.
-- [ ] *(If Option A/telemetry chosen)* the `net/` layer and live status.
+✅ **Integration gap closed (2026-07-31).** ROS2 re-validates the build file
+with the shared kinematics module — the transform that turns `base`/`tip`
+into the `(tool_elevation_rad, stick_roll_rad)` pair `ik()` consumes used to
+live only in the addon (`core/validate.py`), with ROS2's own Phase 1
+checklist marking it "not written yet". That derivation is where three
+separate sign/branch bugs were found during Phase B, so an independent
+reimplementation on the ROS2 side would have been a realistic way for the
+two sides to disagree about where a stick goes — precisely the failure the
+shared-module design exists to prevent. It is now promoted into
+`so_arm_100_kinematics.grasp` (version 1.1.0), re-vendored into
+`so100_builder/kinematics/grasp.py`, and `core/validate.py` calls it rather
+than reimplementing it — see the Blender addon workspace's own
+`so100_builder/README.md`, "The grasp-orientation transform" section, for
+the full derivation and test coverage (that section lives in the addon
+repo, not this one — `so_arm_100_kinematics/README.md` here only summarizes
+it). **The ROS2 workspace's own copy has been updated to match**
+(`so_arm_100_kinematics` 1.1.0, 30/30 tests passing there too) — this is no
+longer outstanding.
+
+### Phase E — Preview & polish — ✅ DONE 2026-07-31 (telemetry N/A, Option C has none)
+- [x] Robot mirror rig driven by the shared FK; scrub through the build order.
+      `core/mirror.py` (pure, testable): ``joint_frames()`` derives all 6
+      joint-chain points (base_link origin through the true TCP) entirely
+      from the vendored, tested ``chain.fk()`` -- called on successively
+      longer joint-angle prefixes, correcting for the one place ``fk()``'s
+      own postprocessing (the `EE_OFFSET` add) is only valid for the full
+      chain. Not a second FK implementation; see the module's own docstring.
+      `ops/mirror.py` reads a stick's base/tip back off the build mesh
+      (respecting any `flip`), solves it with
+      `kinematics.grasp.solve_stick_placement()` -- the exact function
+      `PlaceStick` uses on the ROS2 side -- and poses a preview-only mesh
+      object (`SO100_Mirror`, never selectable, never rendered) with the
+      resulting 6 points. `SO100_PT_preview` (Sec 10.4) adds the toggle and
+      prev/next scrub controls. No telemetry, no live robot link -- Option C
+      (Sec 2) has none by design, and none was wanted here.
+- [x] *(Option A/telemetry chosen)* — N/A, not applicable under Option C.
+
+**Done when:** tested three ways, per Sec 12's own layering — `core/mirror.py`
+against the vendored `fk()` directly (a segment-length invariance property
+across 5 named poses + 200 random joint-space samples, so a bug in the
+`EE_OFFSET` correction would show up as a length that moves with the pose);
+`ops/mirror.py`'s operators executed for real inside Blender (toggle,
+wrap-around stepping, object cleanup on unregister, and a geometric check
+that the rig's TCP point lands within 1 mm of the stick's own
+`grasp_target()` -- not just "drew something"); and the new `Preview`
+panel's `draw()` itself smoke-tested in a real **windowed** Blender instance
+(background mode cannot fire panel draw callbacks at all), since a typo in a
+`layout.prop()`/`operator()` call is invisible to every other test layer.
 
 ---
 

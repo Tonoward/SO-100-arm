@@ -49,6 +49,22 @@ JOINT_ALLOWANCE_M = 0.00325  # ROS2_IMPLEMENTATION_PLAN.md N4 / §8.4
 BUILD_VOLUME_MIN_M = (-0.12, -0.45, 0.0)
 BUILD_VOLUME_MAX_M = (0.12, -0.29, 0.20)
 
+# --- Jaw clearance (Sec 8.2 consequence 2) ----------------------------------
+# The jaws close ~GRASP_OFFSET_M above the stick's base end -- right where the
+# glue joint and any already-placed neighbour sticks are. Modelled as a
+# capsule (radius JAW_RADIUS_M) spanning grip point -> base vertex, per
+# jaw_clearance.py's module docstring. NOT yet measured with calipers -- a
+# placeholder in the same spirit as GRASP_OFFSET_M. See
+# ROS2_IMPLEMENTATION_PLAN.md Sec 8.2/Sec 11 Phase 0.
+JAW_RADIUS_M = 0.010  # "~20 mm across" (Sec 8.2) -> ~10 mm from the tool axis
+
+# Already-placed sticks are checked as capsules too: circumscribed radius of
+# the square stock (half the diagonal, so a corner-on collision is still
+# caught) plus a small inflation so plans do not graze fresh glue (Sec 10's
+# own "consider 1-2 mm inflation" note).
+STICK_COLLISION_INFLATION_M = 0.0015
+STICK_COLLISION_RADIUS_M = STICK_SECTION_M * (2.0 ** 0.5) / 2.0 + STICK_COLLISION_INFLATION_M
+
 # --- Roll convention ---------------------------------------------------------
 # All five tuned example poses in pick_and_place.yaml use Wrist_Roll = 90 deg
 # for a vertical stick grasped/placed with no extra twist. That is therefore

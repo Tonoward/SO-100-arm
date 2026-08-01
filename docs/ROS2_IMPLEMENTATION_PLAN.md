@@ -195,8 +195,8 @@ this machine, so it is usually unavailable.
 | # | Issue | Impact on this project |
 |---|---|---|
 | D1 | **`mount_platform_joint` origin is still `xyz="0 0 0" rpy="0 0 0"`** — a placeholder. The visual platform therefore does not correspond to reality. | **Blocking for Phase 0.** Everything Blender sends is in `base_link`; if the platform/table frame is wrong, the whole sculpture is offset. |
-| D2 | `README.md` §"Pick-and-place demo" is **stale** — it documents `grasp.offset`, `grasp.pregrasp_lift`, `grasp.lift_height`, `place.pose`, none of which exist any more. The current config is the `steps.<name>.mode` scheme. | Misleads any new reader. Fix during Phase 1. |
-| D3 | `README.md` does not yet document findings #2/#3/#4 in §3 (the Cartesian-scaling / `goal_time` timing chain). | Same. |
+| D2 | ✅ **Fixed 2026-08-01.** `README.md` §"Pick-and-place demo" now documents the current `steps.<name>.mode` scheme (incl. Phase 3's `stick_spec` mode), not the old `grasp.offset`/`place.pose` fields. | — |
+| D3 | ✅ **Fixed 2026-08-01.** `README.md` now documents findings #2/#3/#4 in §3 (the Cartesian-scaling / `goal_time` timing chain). | — |
 | D4 | `grasp_verification.gap_threshold: 0.1` rad is untuned against a real 6 mm stick. | Verification may false-positive or false-negative; low priority while a human watches every cycle. |
 | D5 | KDL is the only IK plugin available and is a poor fit for a 5-DOF chain. | See §9 — drives a real architectural decision. |
 | D6 | The demo assumes exactly one stick and one place pose; there is no notion of a build plan, of placed sticks as obstacles, or of resuming an interrupted build. | The entire Phase 3–5 work. |
@@ -359,9 +359,13 @@ Feedback: `string step`, `uint8 step_index`, `uint8 step_count`.
 ### 7.2 `PlaceStick`
 Goal: `StickSpec target` (see §8.3), `bool approach_from_above`.
 
-1. Compute the TCP goal pose from the stick spec + grasp offset (§8.2).
-2. Solve IK (§9) → joint target. **If no solution, abort before moving** with
-   a machine-readable reason so Blender can mark the stick red.
+1-2. ✅ **Built**: `so_arm_100_kinematics.solve_stick_placement(base_xyz_m,
+   tip_xyz_m)` does both steps in one call — computes the grasp-offset TCP
+   target (§8.2) and solves for joint angles (§9.6), raising `Unreachable`
+   with a specific reason on failure rather than returning a wrong answer.
+   **Abort before moving** on that exception, with the reason surfaced so
+   Blender can mark the stick red. If it fails, retry with base/tip flipped
+   before giving up — see §9.6's `Wrist_Roll` asymmetry note.
 3. `approach` — joint move to a pose `place.approach_clearance` (default
    0.05 m) above the final pose.
 4. `insert` — **cartesian_relative** straight down. Mirror image of the pick
@@ -440,13 +444,30 @@ this is the good case. Variable stick lengths cost nothing in the place maths.
    unbuildable because the gripper cannot fit into the joint. Model the jaws
    as a simple box swept along the approach and collision-check it.
 
+   ✅ **Implemented (2026-07-31):** `so_arm_100_kinematics.jaw_clearance`
+   (v1.2.0). Simplifies the swept box to a capsule (segment + radius) for
+   cheap dependency-free 3D math: the jaws are one capsule from the grip
+   point down to the base vertex (radius `JAW_RADIUS_M`, ~10 mm — the "~20
+   mm across" above), checked against each already-placed stick's own
+   capsule (radius `STICK_COLLISION_RADIUS_M` — the square stock's
+   circumscribed radius plus a small inflation, §10's "consider 1-2 mm"
+   note). `check_jaw_clearance()` returns the tightest clearance found, not
+   just a bool, so a placement that is technically clear but tight can still
+   be flagged. **Deliberately does not decide which already-placed stick is
+   this joint's own neighbour** (expected to sit close — that is the joint,
+   not a violation) — the caller (build-order bookkeeping, which already
+   knows the topology) must exclude it before calling. `JAW_RADIUS_M` is an
+   estimate, same unmeasured status as `GRASP_OFFSET_M` — Phase 0.
+
 TCP goal for a place:
 ```
 T_target_tcp = T_stick_base_target ∘ translate(grasp_offset_from_base along stick axis)
                                    ∘ inverse(T_grasp_in_tool)
 ```
-Implement this once in `so_arm_100_kinematics`, unit-test it, and never
-duplicate it.
+✅ **Implemented once, exactly as specified**: `so_arm_100_kinematics.grasp`
+(`grasp_target()` for the position, `solve_stick_orientation()` /
+`solve_stick_placement()` for the orientation + full joint solve). See §9.6.
+Never duplicate it — call it from both sides.
 
 ### 8.3 `StickSpec` — the canonical stick description
 
@@ -473,6 +494,12 @@ Wireframe edges meet at a mathematical point; 6.45 mm square sticks cannot.
 Every stick therefore stops **3.25 mm short** of each vertex it shares with
 another stick, leaving a gap for a glue blob. An end that seats on the base
 plate is **not** shared and gets no gap.
+
+⚠ **3.25 mm is per stick end, so the gap between two sticks meeting at a
+vertex is 6.5 mm, not 3.25 mm.** Both sticks pull back 3.25 mm from the
+*same* shared vertex, from opposite sides. Getting this backwards is exactly
+what put the wrong numbers into [`BRIDGE_PROTOCOL.md`](BRIDGE_PROTOCOL.md)
+§A.2's worked example originally (corrected 2026-07-31).
 
 ⚠ **The design is grown, not the sticks shortened.** Rather than cutting every
 stick to fit the mesh, the addon keeps the stick lengths as drawn and moves
@@ -609,11 +636,47 @@ lie in the arm's vertical plane (fact 1):
 | **Horizontal, tangential** (perpendicular to the arm's reach direction) | horizontal, radial | ✅ same poses, different `Wrist_Roll` |
 | **Horizontal, radial** (pointing away from the robot) | vertical (tool pointing down) | ✅ but costs ~150 mm of reach |
 | **Tilted in the arm's plane** (leaning toward/away from the robot) | tilted correspondingly | ✅ |
-| **Tilted out of the arm's plane** (leaning sideways) | would need independent tool yaw | ❌ **not achievable with 5 DOF** |
+| **Tilted out of the arm's plane** (leaning sideways) | a tool axis perpendicular to the tilt direction, at *some* elevation | ✅ **corrected 2026-07-28 — see below** |
 
-The last row is a genuine 5-DOF limitation — no solver fixes it. It is exactly
-what the future **rotating table** buys back, since rotating the workpiece
-changes which plane a given stick lies in.
+**⚠ Correction, 2026-07-28: the last row above was wrong.** It reasoned that
+because the tool axis is confined to the arm's vertical plane, a stick
+tilted *out* of that plane would need an out-of-plane tool axis — but that
+doesn't follow. "Perpendicular to a single in-plane vector" is itself a
+whole *other* plane of directions (the disk `Wrist_Roll` sweeps), and as
+elevation varies continuously, the tool axis sweeps through every direction
+*in* the arm's plane — so the union of achievable stick directions is a
+genuinely 2-parameter family, not the handful of special cases in the table
+above. (The "horizontal, tangential" row two above it was already a
+counterexample to the old claim: tangential is perpendicular to the arm's
+own reach direction, i.e. *out* of the naive "in-plane only" picture, and it
+was already marked achievable.)
+
+Found and verified while building `so100_builder/core/validate.py` (Phase B):
+`ik((0.30, -0.0452, 0.10), tool_elevation_target_rad=0.0,
+stick_roll_rad=math.radians(-45.0))` succeeds and produces a stick tilted
+sideways, out of the arm's vertical plane — round-tripped back through `fk()`
+to confirm, not just derived. This is now solved and **verified in general**,
+not just re-argued for one case: `grasp.py`'s `solve_stick_orientation()`
+finds and round-trip-confirms out-of-plane placements routinely — a
+2000-sample sweep over fully random 3D stick directions found **383
+reachable**, every one verified to <0.001° against `fk()` (the committed
+test suite reruns a faster 500-sample version of the same sweep — see
+`so_arm_100_kinematics/test/test_grasp.py::TestBroadRandomSweep`). Getting
+here required finding and fixing two easy-to-make sign-convention bugs
+(which reference direction counts as "the stick's own axis", and
+`Wrist_Roll`'s rotation sense) — presumably how this row ended up wrong in
+the first place. See `grasp.py`'s own module docstring for the full
+derivation.
+
+**What is still a genuine 5-DOF limit**, confirmed by the same module (see
+`test_grasp.py::TestRealWorldCases`): a small residual band of directions
+right at the numerically ill-conditioned points (exactly tangential, and
+nearby), plus directions that fall outside `Wrist_Roll`'s own limit (which
+is asymmetric — see §9.6). Those genuinely fail, and the module says so via
+`Unreachable` rather than a wrong answer. The future **rotating table** is
+unaffected by this correction — it is still valuable for the placements this
+*does* rule out (anything needing `Wrist_Roll` beyond its own physical
+limit), just not for the broader reason this table previously overstated.
 
 **Measured envelope for vertical sticks** (tool horizontal; `base z` is the
 height of the stick's bottom end, = TCP z − 51 mm):
@@ -662,6 +725,33 @@ Caveats on these numbers: they cover **vertical sticks only**, and they ignore
 already-placed sticks**, all of which shrink the usable set further. Treat
 them as an upper bound, and let the Phase 1 reachability map (which includes
 collision checking) be the authority.
+
+### 9.6 The grasp-orientation transform (§8.2's "transform helper"), built
+
+`so_arm_100_kinematics.grasp` answers the question §9.4 is really about —
+"can a stick with *this* physical base/tip actually be placed" — as a
+general-purpose function, not case-by-case table entries. Given a target
+point and a desired stick direction, `solve_stick_orientation()`
+exhaustively tries the small number of candidate tool elevations that could
+possibly work (the two exact roots of the perpendicularity equation, plus
+the four cardinal directions to cover the equation's own numerically
+ill-conditioned points) and **verifies every accepted candidate by feeding
+it back through `fk()` and checking the achieved direction** — never trusts
+a formula in isolation. `Unreachable` therefore means genuinely unreachable,
+not merely unchecked. This is what corrected the §9.4 table above, and it's
+what `PlaceStick` (§7.2) calls directly via `solve_stick_placement()`.
+
+One more real, hardware-relevant limit it surfaces: **`Wrist_Roll`'s joint
+limit is asymmetric in `stick_roll` terms.** The raw joint limit is
+symmetric (±2.75 rad), but the `stick_roll=0 → Wrist_Roll=π/2` convention
+(§9.3) shifts the usable window off-center, so a stick direction that's
+perfectly fine as `base→tip` can fail as `tip→base` (or vice versa) purely
+on roll headroom — confirmed as a real case in
+`test_grasp.py::test_wrist_roll_asymmetric_limit_makes_one_end_assignment_fail`.
+**Practical consequence for the build-order solver (§10.1) and the Blender
+addon:** if a placement reports unreachable, retry with the base/tip
+assignment flipped before concluding it's impossible — the per-stick `flip`
+override (`BLENDER_ADDON_PLAN.md` §9.2) exists exactly for this.
 
 ---
 
@@ -772,9 +862,26 @@ built", which the user needs **before** designing a sculpture (§9.5).
       `ros2 run so_arm_100_pick_and_place verify_kinematics_hardware`
       (plan → RViz ghost preview → Enter-gated execute; never auto-moves).
       ⚠ Re-run this after Phase 0 changes `mount_platform_joint`'s origin.
-- [ ] Grasp-offset transform (§8.2) and the jaw-clearance test (§8.2) —
-      `GRASP_OFFSET_M` is in `constants.py` but the transform helper and the
-      swept-jaw collision test are not written yet.
+- [x] ✅ **Grasp-offset transform (§8.2) written: `so_arm_100_kinematics.grasp`
+      (v1.1.0, 2026-07-31).** `grasp_target`/`solve_stick_orientation`
+      (exhaustive, self-verifying — see §9.6 for the derivation and the real
+      regression cases it locks in) and `solve_stick_placement` (the
+      target→joints convenience `PlaceStick` needs directly). Ported from
+      the Blender addon's prototype (`core/validate.py`), not reimplemented
+      independently, so both sides agree by construction. Covered by
+      `so_arm_100_kinematics/test/test_grasp.py` (19 tests, all passing in
+      this workspace too — re-run, not just copied over on trust).
+      **Corrected §9.4's "out-of-plane tilt is unreachable" claim** in the
+      process — see §9.6.
+- [x] ✅ **Jaw-clearance test (§8.2) written: `so_arm_100_kinematics.jaw_clearance`
+      (v1.2.0, 2026-07-31).** `check_jaw_clearance()` models the jaws and each
+      already-placed stick as capsules (segment + radius) and reports the
+      tightest clearance found — see §8.2 consequence 2 for the model and
+      what it deliberately leaves to the caller. Covered by
+      `so_arm_100_kinematics/test/test_jaw_clearance.py` (12 tests, all
+      passing; 42/42 across the whole package). **Not yet wired into any
+      caller** — Phase 3/4's task server is what will actually call it
+      per-placement; this phase only delivers the checkable primitive.
 - [ ] Reachability map generator: `envelope.sweep_envelope()` exists and gives
       min/max radius per height, but does **not** yet model self-collision,
       the mount platform, the table, or placed sticks. Add those, plus a
@@ -784,31 +891,83 @@ built", which the user needs **before** designing a sculpture (§9.5).
 - **Done when:** the collision-aware map exists and the tuned `place` pose is
   marked reachable by it.
 
-⚠ **Two caveats recorded in the code, not to be forgotten:**
+⚠ **Caveats recorded in the code, not to be forgotten:**
 - `GRASP_OFFSET_M = 0.051` is *derived*, not measured — Phase 0's ruler check.
+  Everything about stick placement depends on it.
 - The `stick_roll_rad = 0 ⇒ Wrist_Roll = π/2` mapping is a **software
   convention** chosen to match the tuned poses, not something the URDF
-  dictates. Confirm the sign on hardware before trusting it for a real build.
+  dictates. **Still unverified on hardware** — every test so far used
+  `stick_roll = 0`, so a non-zero roll's *sign* has never been checked
+  physically. Confirm before a real build; the stock is square, so a wrong
+  sign is visible.
+- `Wrist_Roll`'s limit is asymmetric in `stick_roll` terms (§9.6) — a
+  placement that fails may succeed with base/tip flipped. Not yet wired into
+  an automatic retry anywhere; callers must do it themselves for now.
 
-### Phase 2 — Refactor without behaviour change
-- [ ] Split `pick_and_place_node.py` into `motion.py` (MoveIt2 wrapper, step
-      primitives, preview publisher, prompt), `scene.py` (collision objects),
-      `sequences.py` (the composed step lists).
-- [ ] `pick_and_place_node.py` becomes a thin `main()` over those — **the
-      interactive demo must behave exactly as it does today.**
-- [ ] Fix D2/D3: bring `README.md`'s pick-and-place section in line with the
-      current config schema and document the timing findings (§3 #2–#4).
-- **Done when:** a full interactive run on hardware is indistinguishable from
-  today's.
+### Phase 2 — Refactor without behaviour change — 🟢 SOFTWARE DONE 2026-08-01, awaiting hardware
+- [x] ✅ Split `pick_and_place_node.py` into `motion.py` (`MotionController`:
+      the `MoveIt2`/`MoveIt2Gripper` wrapper, the executor thread, step
+      primitives, preview publisher, prompt, `run_step`), `scene.py`
+      (collision-object lifecycle for the fed stick), `sequences.py` (the
+      composed step lists + `check_grasp_success`).
+- [x] ✅ `pick_and_place_node.py` is now a thin `main()` over those.
+      `verify_kinematics_hardware_node.py` updated too, to reuse
+      `motion.py` instead of its own duplicated inline plan/preview/prompt
+      copy.
+- [x] ✅ Fixed D2/D3: `README.md`'s pick-and-place section now documents the
+      current `steps.<name>.mode` schema (incl. `stick_spec`, Phase 3) and
+      the §3 #2–#4 timing-watchdog findings.
+- **Verified so far (no hardware):** all imports clean; a full interactive
+  run against `move_group` only (no controllers — a fake `/joint_states`
+  publisher stood in for the missing controller, see below) stepped through
+  all 6 named steps via skip, exercising the complete
+  param-declare → dispatch → preview → prompt → collision-object
+  path with zero code-path errors; the abort path (`q`) confirmed clean on
+  both `pick_and_place_node` and `verify_kinematics_hardware_node`.
+  ⚠ **`moveit.launch.py` alone never publishes `/joint_states`** (it starts
+  only `move_group`, no `ros2_control_node`) — `pymoveit2`'s `plan()` blocks
+  waiting for one. A throwaway `ros2 topic pub -r 10 /joint_states ...`
+  publishing the tuned `home` pose is what unblocked this dry run; it is
+  not part of the shipped code.
+- **Done when:** a full interactive run **on hardware** is indistinguishable
+  from before the refactor — not yet done, needs the user present.
 
-### Phase 3 — Parametric place
-- [ ] Drive the demo's `place` step from a `StickSpec` (§8.3) through the
-      Phase 1 IK instead of hand-tuned joint angles.
-- [ ] Feed the resulting joint angles to MoveIt as a **`joint` goal** — the
-      mode finding #11 says is by far the most reliable here. The brittle
-      "pose goal → planner IK → maybe" path disappears entirely.
+### Phase 3 — Parametric place — 🟢 SOFTWARE DONE 2026-08-01, awaiting hardware
+- [x] ✅ New `stick_spec.py`: `solve_stick_spec_joints(base_xyz_m, tip_xyz_m,
+      roll_deg)` — wraps `so_arm_100_kinematics.solve_stick_orientation`
+      (never reimplements it), adds the base/tip flip-retry §9.6 calls for
+      (closing the `STATUS.md` open item that flagged this as unwired), and
+      applies `roll_deg` on top of the solved orientation by re-running
+      `ik()` with the adjusted `stick_roll_rad` — `solve_stick_placement`
+      itself has no `roll_deg` input, since the exhaustive search only
+      solves for the stick's axis direction, not its twist about that axis.
+- [x] ✅ Wired into `motion.plan_arm_step` as a new `mode: "stick_spec"`
+      (`base_xyz_m`/`tip_xyz_m`/`roll_deg` step-config fields, declared in
+      `sequences.declare_arm_step`), feeding the solved joints to MoveIt as
+      a **`joint` goal** per finding #11 — the yaml's `place` step switches
+      between today's hand-tuned `joint_positions` and a computed target by
+      changing `mode` alone.
+- **Verified so far (no hardware):**
+  - 6 unit tests (`test/test_stick_spec.py`): recovers the tuned `place`
+    pose's joints from a reconstructed base/tip to <0.5°; the flip-retry
+    reproduces `test_grasp.py`'s own asymmetric-`Wrist_Roll` regression
+    case; `roll_deg` changes only `Wrist_Roll` when no flip is needed, and
+    is shown (not just asserted away) to correctly trigger the flip when a
+    large `roll_deg` pushes `Wrist_Roll` out of range; a real stick from
+    the user's own Blender-exported build file
+    (`SO100BlenderTest.build.build.build.json`'s `s_004`) solves; both ends
+    unreachable raises. `colcon test`: 48 tests, 0 errors, 0 failures.
+  - MoveIt cross-check, no hardware: the `place` step, set to `stick_spec`
+    with `s_004`'s real base/tip, planned successfully against `move_group`
+    (same fake-`/joint_states` harness as Phase 2's dry run) — MoveIt
+    accepted the computed target as a valid, collision-checked joint goal.
 - **Done when:** placing via a `StickSpec` lands in the same spot as today's
-  hand-tuned `place` pose, verified on hardware.
+  hand-tuned `place` pose, verified **on hardware** — not yet done, needs
+  the user present. Suggested order: (1) reproduce the tuned pose via
+  `stick_spec` (config comment in `pick_and_place.yaml` has the exact
+  values) and confirm it lands the same as today's demo; (2) place `s_004`
+  from the real build file — the first stick placed at a computed, not
+  hand-tuned, location.
 
 ### Phase 4 — Task server
 - [ ] New `so_arm_100_stick_msgs` with the actions/services in §5.1.
