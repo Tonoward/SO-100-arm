@@ -42,7 +42,6 @@ from rclpy.node import Node
 
 from so_arm_100_pick_and_place import sequences
 from so_arm_100_pick_and_place.motion import MotionController
-from so_arm_100_pick_and_place.pose_utils import vec6_to_pos_quat
 
 
 def main():
@@ -50,19 +49,25 @@ def main():
     node = Node("pick_and_place_node")
 
     base_frame = node.declare_parameter("base_frame", "base_link").value
-    stick_size = list(node.declare_parameter("stick.size", [0.0065, 0.0065, 0.1]).value)
-    stick_pose_v = list(node.declare_parameter(
-        "stick.pose", [0.25, 0.0, 0.05, 0.0, 0.0, 0.0]).value)
-    stick_pos, stick_quat = vec6_to_pos_quat(stick_pose_v)
+    # Matches config/pick_and_place.yaml's real feeder-hole measurement --
+    # kept in sync 2026-08-02 (Sec 4 D9); fallback safety net only, since
+    # this node's own launch file always supplies the real yaml.
+    # base_xyz_m is the stick's PHYSICAL BASE (bottom, at the feeder hole),
+    # not a box center -- see pose_utils.feeder_stick_pose.
+    stick_base_xyz_m = tuple(node.declare_parameter("stick.base_xyz_m", [0.379, -0.026, 0.0103]).value)
+    stick_section_m = list(node.declare_parameter("stick.section_m", [0.0060, 0.0060]).value)
+    stick_default_length_m = node.declare_parameter("stick.default_length_m", 0.11).value
 
     steps_cfg = sequences.declare_all_steps(node)
 
     gripper_open_position = math.radians(node.declare_parameter("grasp.gripper_open_position_deg", 30.0).value)
-    gripper_grasp_position = math.radians(node.declare_parameter("grasp.gripper_grasp_position_deg", -10.0).value)
+    # -9.0 deg / 0.0157 rad re-tuned 2026-08-02 on the real gripper/stock
+    # via tune_grasp_node.py -- see config/pick_and_place.yaml's own comment.
+    gripper_grasp_position = math.radians(node.declare_parameter("grasp.gripper_grasp_position_deg", -9.0).value)
     grasp_verification_enabled = node.declare_parameter("grasp_verification.enabled", True).value
-    grasp_gap_threshold = node.declare_parameter("grasp_verification.gap_threshold", 0.1).value
-    velocity_scaling = node.declare_parameter("velocity_scaling", 0.2).value
-    acceleration_scaling = node.declare_parameter("acceleration_scaling", 0.2).value
+    grasp_gap_threshold = node.declare_parameter("grasp_verification.gap_threshold", 0.0157).value
+    velocity_scaling = node.declare_parameter("velocity_scaling", 0.4).value
+    acceleration_scaling = node.declare_parameter("acceleration_scaling", 0.4).value
     planning_time = node.declare_parameter("planning_time", 5.0).value
     interactive = node.declare_parameter("interactive", True).value
 
@@ -80,7 +85,11 @@ def main():
     sequences.run_full_demo(
         motion,
         steps_cfg,
-        stick_cfg={"size": stick_size, "position": stick_pos, "quat_xyzw": stick_quat},
+        stick_cfg={
+            "base_xyz_m": stick_base_xyz_m,
+            "section_m": stick_section_m,
+            "default_length_m": stick_default_length_m,
+        },
         grasp_cfg={
             "open_position": gripper_open_position,
             "grasp_position": gripper_grasp_position,

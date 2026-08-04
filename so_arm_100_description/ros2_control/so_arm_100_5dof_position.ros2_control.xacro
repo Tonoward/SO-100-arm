@@ -122,8 +122,12 @@
         <state_interface name="effort"/>
       </joint>
       <joint name="${prefix}Gripper">
+        <!-- min widened 2026-08-02 to stay consistent with
+             so_arm_100_5dof_arm.urdf.xacro's Gripper joint limit (see that
+             file's comment for why, and for which launch paths actually
+             use this file vs. moveit_config's own ros2_control.xacro). -->
         <command_interface name="position">
-          <param name="min">-0.1792</param>
+          <param name="min">-0.24</param>
           <param name="max">1.57</param>
           <xacro:if value="${initial_positions_file != ''}">
             <xacro:property name="joint_name" value="${prefix}Gripper"/>

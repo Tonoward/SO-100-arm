@@ -18,6 +18,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectory
 from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
+from moveit_msgs.srv import GetStateValidity
 
 from pymoveit2 import MoveIt2, MoveIt2Gripper
 
@@ -60,6 +61,16 @@ class MotionController:
         self.base_frame = base_frame
         self.interactive = interactive
 
+        # pymoveit2's plan()/wait_until_executed() reenter rclpy.spin_once()
+        # on this node from inside a callback, which deadlocks under the
+        # default MutuallyExclusiveCallbackGroup -- every callback that can
+        # be on the call stack while a MoveIt2 call blocks needs to be in a
+        # reentrant group too. ⚠ Do NOT add unrelated callbacks (e.g. an
+        # ActionServer) to this same node/group -- see stick_task_server_node.py's
+        # module docstring for why a nested rclpy.spin_once() from within a
+        # callback the node's OWN executor is dispatching wedges that
+        # executor permanently after the first such call (ros2/ros2#1609).
+        # Give any new callback consumer its own separate Node instead.
         callback_group = ReentrantCallbackGroup()
         self.arm = MoveIt2(
             node=node,
@@ -86,6 +97,15 @@ class MotionController:
             self.gripper.allowed_planning_time = planning_time
 
         self.preview_pub = node.create_publisher(DisplayTrajectory, "display_planned_path", 1)
+        # Diagnostic-only (Sec 11 Phase 5 hardening): explain_collision()
+        # below uses this to name what's actually in collision on a planning
+        # failure, instead of leaving the operator to dig through RViz/logs
+        # for a bare "Error code: INVALID_MOTION_PLAN". Same reentrant group
+        # as self.arm/self.gripper -- it's called from the exact same
+        # already-safe context (right after an already-safe self.arm.plan()
+        # call), so it needs the same nesting support.
+        self._state_validity_client = node.create_client(
+            GetStateValidity, "check_state_validity", callback_group=callback_group)
 
         self._executor = rclpy.executors.MultiThreadedExecutor(4)
         self._executor.add_node(node)
@@ -105,6 +125,38 @@ class MotionController:
         p = pose_stamped.pose.position
         o = pose_stamped.pose.orientation
         return (p.x, p.y, p.z), (o.x, o.y, o.z, o.w)
+
+    def explain_collision(self, joint_positions, group_name: str = "arm") -> Optional[str]:
+        """Best-effort diagnostic for a planning failure: checks whether the
+        GOAL joint configuration itself is in collision via MoveIt's
+        `check_state_validity` service, and if so, names what's touching
+        what (e.g. `stick` vs `placed_s_005`) -- so a failed place doesn't
+        just say `INVALID_MOTION_PLAN` and send the operator digging through
+        RViz for the reason. Returns None on anything inconclusive (service
+        unavailable/timeout, or the goal state actually being valid --
+        planning can still fail for reasons other than a colliding goal,
+        e.g. no path exists between two individually-valid states), never
+        raises -- this only ever adds a hint to an already-failed step, it
+        must never itself turn into a new failure mode."""
+        try:
+            if not self._state_validity_client.wait_for_service(timeout_sec=2.0):
+                return None
+            request = GetStateValidity.Request()
+            request.group_name = group_name
+            request.robot_state.joint_state.name = list(ARM_JOINT_NAMES)
+            request.robot_state.joint_state.position = [float(v) for v in joint_positions]
+            future = self._state_validity_client.call_async(request)
+            rclpy.spin_until_future_complete(self.node, future, timeout_sec=2.0)
+            response = future.result()
+            if response is None or response.valid or not response.contacts:
+                return None
+            pairs = sorted({
+                f"'{c.contact_body_1 or '?'}' vs '{c.contact_body_2 or '?'}'" for c in response.contacts
+            })
+            return "goal pose collides: " + "; ".join(pairs)
+        except Exception as exc:  # noqa: BLE001 -- diagnostic-only, must never mask the real failure
+            self.logger.warn(f"explain_collision() itself failed (non-fatal, just no hint this time): {exc}")
+            return None
 
     def plan_arm_step(self, step_cfg):
         """`step_cfg["mode"]` selects how this is interpreted:
@@ -130,7 +182,12 @@ class MotionController:
         """
         mode = step_cfg["mode"]
         if mode == "joint":
-            return self.arm.plan(joint_positions=step_cfg["joint_positions"], joint_names=ARM_JOINT_NAMES)
+            trajectory = self.arm.plan(joint_positions=step_cfg["joint_positions"], joint_names=ARM_JOINT_NAMES)
+            if trajectory is None:
+                hint = self.explain_collision(step_cfg["joint_positions"])
+                if hint:
+                    self.logger.error(f"Planning failed at the target pose -- {hint}")
+            return trajectory
 
         if mode == "stick_spec":
             try:
@@ -139,7 +196,12 @@ class MotionController:
             except sak.Unreachable as exc:
                 self.logger.error(f"Stick-spec placement is unreachable either way round: {exc}")
                 return None
-            return self.arm.plan(joint_positions=list(joints), joint_names=ARM_JOINT_NAMES)
+            trajectory = self.arm.plan(joint_positions=list(joints), joint_names=ARM_JOINT_NAMES)
+            if trajectory is None:
+                hint = self.explain_collision(joints)
+                if hint:
+                    self.logger.error(f"Planning failed at the target pose -- {hint}")
+            return trajectory
 
         if mode == "cartesian_relative":
             current_pose = self.get_current_ee_pose()

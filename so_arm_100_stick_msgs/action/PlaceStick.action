@@ -1,0 +1,19 @@
+# ROS2_IMPLEMENTATION_PLAN.md Sec 7.2. Requires state HOLDING; ends in
+# AT_PLACE on success, gripper still closed (or ERROR on failure). Fails
+# fast (before moving) if so_arm_100_kinematics reports the target
+# unreachable either way round (Sec 9.6's base/tip flip-retry).
+#
+# approach_from_above is accepted but NOT YET IMPLEMENTED as a distinct
+# approach+insert cartesian path (Sec 7.2 steps 3-4) -- this phase reuses
+# Phase 3's hardware-proven single joint-move place. Reserved for a
+# follow-up; passing true today has no effect.
+
+so_arm_100_stick_msgs/StickSpec target
+bool approach_from_above
+---
+bool success
+string message
+---
+string step
+uint8 step_index
+uint8 step_count

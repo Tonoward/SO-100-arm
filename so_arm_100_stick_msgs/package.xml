@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>so_arm_100_stick_msgs</name>
+  <version>0.1.0</version>
+  <description>Interfaces for the stick-assembly task server: StickSpec/TaskState messages and the PickStick/PlaceStick/ReleaseStick actions (ROS2_IMPLEMENTATION_PLAN.md Sec 5.1/6/7).</description>
+  <maintainer email="bruk@signalbotics.com">Bruk Gebregziabher</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

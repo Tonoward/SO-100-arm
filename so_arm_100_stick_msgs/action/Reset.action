@@ -1,0 +1,16 @@
+# ROS2_IMPLEMENTATION_PLAN.md Sec 5.1/11 Phase 5. Requires state ERROR;
+# ends in IDLE on success -- the only way back to IDLE from ERROR (Sec 6:
+# ERROR otherwise has no recovery action). Mirrors BRIDGE_PROTOCOL.md
+# Sec 5.11's already-designed (until now unimplemented) socket `reset`
+# command, including its assume_gripper_empty flag: only the human knows
+# whether a stick is still in the jaws after a failure, and that flag
+# decides whether the "stick" collision object gets cleaned up here or
+# left in place for subsequent planning to stay collision-aware around it.
+# No feedback -- this is an instant state transition, not a multi-step
+# sequence like the other three actions.
+
+bool assume_gripper_empty
+---
+bool success
+string message
+---

@@ -16,6 +16,7 @@
   <depend>shape_msgs</depend>
   <depend>trajectory_msgs</depend>
   <depend>so_arm_100_kinematics</depend>
+  <depend>so_arm_100_stick_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

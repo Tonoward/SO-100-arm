@@ -182,6 +182,14 @@ undoing one of these, re-read the in-file comment first.
 | 9 | `arm_effort_controller` / `gripper_effort_controller` are deliberately **not** listed in `moveit_simple_controller_manager.controller_names` — they claim the same joints' effort interfaces and win the race, leaving the position controllers inactive. | `moveit_controllers.yaml` comment |
 | 10 | Interactive prompts must be printed via `logger.info()` (a complete, flushed line), not `input()`'s prompt argument, and the node should be started with `ros2 run` — `ros2 launch` does not reliably forward stdin. | `pick_and_place_node.prompt()` |
 | 11 | Joint-space (`joint` mode) planning is by far the most reliable path on this arm. Cartesian modes are used only where the *path shape* matters (pulling straight out of the feeder hole). | `pick_and_place.yaml` header |
+| 12 | **A `pymoveit2` call (anything that ends up nesting `rclpy.spin_once()`) must never run inside a callback dispatched by the same `Executor` that owns its `Node`.** Confirmed on real hardware: an `ActionServer`'s `execute_callback` calling into `motion.py` wedged the whole node permanently after the first such call — no exception, every later goal on every action just hangs. Known upstream rclpy behaviour ([ros2/ros2#1609](https://github.com/ros2/ros2/issues/1609)): nested `spin_once`/`spin_until_future_complete` detaches the node from its executor. Fix: give any new callback-driven consumer (a task server, a subscriber, anything) its **own separate `Node` + `Executor`**, never share `motion.py`'s. | `stick_task_server_node.py` module docstring, Sec 11 Phase 4 |
+| 13 | **Real hardware's `robot_description` comes from `so_arm_100_moveit_config/config/so_arm_100.urdf.xacro`** (via `MoveItConfigsBuilder`, used by both `pickandplace_demo.launch.py` and `hardware.launch.py`), which includes `so_arm_100_description`'s arm URDF (joint `<limit>` tags — this IS the real, enforced bound) but its OWN `so_arm_100.ros2_control.xacro` (no min/max clamp on any joint's `command_interface` at all). `so_arm_100_description`'s own `ros2_control/so_arm_100_5dof_position.ros2_control.xacro` (which does have min/max) is only reachable via `so_arm_100_5dof.urdf.xacro`, the description package's standalone display/demo entry point — **not part of the real-hardware chain**. Don't assume editing one xacro package's ros2_control file affects real hardware; check which `robot_description` chain the launch file you're using actually builds. | `so_arm_100_5dof_arm.urdf.xacro`'s Gripper joint comment |
+| 14 | **The LeRobot calibration JSONs (`~/.cache/huggingface/lerobot/calibration/...`) are not read by this ROS2 workspace at all.** `so_arm_100_hardware`'s own driver reads `so_arm_100_hardware/config/calibration.yaml` (`zero_ticks`/`direction` per joint only — no range/clamp concept). There are also two *different* LeRobot files that are easy to confuse: `teleoperators/so_leader/*.json` (the teleop leader arm — never touches the robot MoveIt/the task server drives) and `robots/so_follower/*.json` (the follower's own LeRobot calibration, also unused by this ROS2 driver). Editing either LeRobot file has zero effect on anything in this workspace. | Found 2026-08-02 investigating a "recalibration had no effect" report |
+| 15 | **`tune_grasp_node.py`'s interactive close-test never removed the "stick" collision object before planning a close** — unlike `sequences.run_pick_sequence`'s `plan_grasp_gripper()`, which deliberately does (finding #7's remove/plan/re-add pattern). This was silently masked before finding #14/D9 was fixed: `tune_grasp_node` was reading the *wrong* stick pose (13cm off), so the box never actually sat in the jaws' way. Once D9 fixed the pose, the box sits exactly where the jaws close, so **every** meaningful close got rejected as a collision (`Error code: FAILURE`, even at -10°, well inside any joint limit) — not the joint-limit issue finding #13 diagnosed, which was a real but secondary/insufficient fix on its own. Fixed 2026-08-02: added `_close_gripper()`, mirroring `plan_grasp_gripper()`'s remove -> plan -> re-add exactly, used only for the close test (opening away from the stick never needed it). **Moral: after fixing a stale/wrong pose bug, re-check that nothing was relying on that staleness to avoid a real collision.** | `tune_grasp_node.py`'s `_close_gripper()` |
+| 16 | **A launch_ros `Node` action's `name=` parameter applies a GLOBAL `-r __node:=<name>` remap to the WHOLE PROCESS, not just to whichever `rclpy.node.Node` happens to match.** `stick_task_server.launch.py` set `name='stick_task_server'`, which since `stick_task_server_node.py`'s own `main()` creates TWO `Node`s in one process (`stick_task_server_motion`, `stick_task_server` -- finding #12's wedge fix) collapsed BOTH onto the same displayed name ("Publisher already registered for provided node name", `ros2 node list` showing `/stick_task_server` twice and no `/stick_task_server_motion` at all). Found 2026-08-03 testing Phase 5's `build_runner` against this launch file. Cosmetic only for THIS node's actual lifecycle (both nodes live and die together, so the dangling-publisher risk the warning describes never materializes here) but still a real bug, not intended. Fixed by removing `name=` -- the script already names both nodes itself, matching `pick_and_place.launch.py`'s own `Node` action, which never set `name=` either. **A launch file for any node that creates more than one `rclpy.Node` in-process must not set `name=` on the launch action.** | `stick_task_server.launch.py` |
+| 17 | **`register_placed_stick` only runs partway through `run_release_sequence`** (after its 'open gripper at place' step, before 'retreat' -- Sec 7.3), so a `ReleaseStick` failure at that first step leaves a stick that is physically already placed *and glued by the operator* completely unknown to the planning scene, with no code path to recover it. Found 2026-08-03/04 on real hardware: a stick was skipped after a release failure, its collision box never existed, and a later placement in the same run failed -- plausibly (not certain) because the arm planned through where that un-modelled stick physically sat. **`build_runner` cannot infer this from the action result alone** -- only the operator, looking at the robot, knows whether the glue already happened. Fixed by adding `prompt_stick_physically_placed()`: asked before finalizing any skip/abort, it overrides the outcome to `placed` (registers the collision box from the build file's own geometry, same math as resume) whenever the operator says yes, regardless of which of the three actions failed. | `build_runner_node.py`'s `prompt_stick_physically_placed()` |
+| 18 | **MoveIt's planning scene lives in `move_group`, not in `build_runner`/`stick_task_server`** -- restarting those two processes after a crashed/aborted run does NOT clear whatever collision state they left behind (a stray transient `stick` object, or a `placed_<id>` box for a stick an old sidecar called placed but the current one doesn't). Found 2026-08-03/04: a user restarting `build_runner` after a failed run reported an unexpected leftover collision box, only cleared by also closing RViz/`move_group` -- and this is a plausible (not confirmed) explanation for a same-session `INVALID_MOTION_PLAN` on a place that should have been reachable. Fixed: `build_runner`'s `main()` now deterministically clears the transient `stick` id and any `placed_<id>` not currently marked `placed` in the sidecar, by id, before rebuilding the scene from that sidecar (Sec A.5) -- no scene query needed, since the full set of possible ids is just the build file's own stick list. **Do not assume a fresh `build_runner`/`stick_task_server` process means a fresh planning scene.** | `build_runner_node.py main()`, just before the Sec A.5 resume block |
+| 19 | **The array-position `for` loop introduced to fix the skip-infinite-loop bug (see this loop's own comment) re-attempts EVERY stick from `start_index` onward unconditionally, including one already `placed` from an earlier session's sidecar.** Confirmed on real hardware 2026-08-04: `s_005` was already `placed` (correctly re-registered as a permanent `placed_s_005` collision box by the Sec A.5 resume block), but the loop re-picked and re-attempted `PlaceStick` on it anyway -- `PlaceStick` correctly failed with `INVALID_MOTION_PLAN` because the target pose was already occupied by that stick's own already-registered box (a real collision, not a stale-scene artifact -- the RViz screenshot that surfaced this showed exactly that). **The two array-position-loop bugs are opposite failure modes of the same design tension**: calling `next_stick_to_load` on every retry re-surfaces the current stick forever (finding fixed pre-#16); blind array-position iteration re-attempts already-`placed` sticks (this finding). Fixed by adding an explicit `statuses[stick_id]["status"] == STATUS_PLACED` guard at the top of each `for` iteration, skipping (not attempting) any stick already placed when the run started -- cheap because the for loop only ever moves forward, so a stick placed *during* this same run is never revisited by construction. | `build_runner_node.py`'s `for current_index in range(...)` loop |
 
 **Debugging technique that worked repeatedly:** to read a live node's ROS log
 without asking the user to copy-paste, find it via
@@ -197,10 +205,16 @@ this machine, so it is usually unavailable.
 | D1 | **`mount_platform_joint` origin is still `xyz="0 0 0" rpy="0 0 0"`** — a placeholder. The visual platform therefore does not correspond to reality. | **Blocking for Phase 0.** Everything Blender sends is in `base_link`; if the platform/table frame is wrong, the whole sculpture is offset. |
 | D2 | ✅ **Fixed 2026-08-01.** `README.md` §"Pick-and-place demo" now documents the current `steps.<name>.mode` scheme (incl. Phase 3's `stick_spec` mode), not the old `grasp.offset`/`place.pose` fields. | — |
 | D3 | ✅ **Fixed 2026-08-01.** `README.md` now documents findings #2/#3/#4 in §3 (the Cartesian-scaling / `goal_time` timing chain). | — |
-| D4 | `grasp_verification.gap_threshold: 0.1` rad is untuned against a real 6 mm stick. | Verification may false-positive or false-negative; low priority while a human watches every cycle. |
+| D4 | ✅ **Fixed 2026-08-02, re-tuned 2026-08-02 (same day, second pass).** `grasp_verification.gap_threshold` tuned on the real gripper/stock with the new `tune_grasp` tool (`tune_grasp_node.py`): closes to a commanded position, reads back where it actually settles, and reports the verification verdict at several candidate thresholds at once. Found the *old* default (0.1 rad, ~5.7°) was higher than any gap a genuine grasp could produce at the old `gripper_grasp_position_deg` (-10°) — every real grasp would have false-negatived. **First-pass values** (`gripper_grasp_position_deg: -12.0`, `gap_threshold: 0.0611` rad/~3.5° — empty ~2.1° gap, holding ~4.35° gap) turned out to have been measured under a *stale* `lower` pose: finding #15/D9 fixed a bug where `stick_task_server`/`tune_grasp` were silently using code-fallback `lower`/`stick.pose` values instead of the yaml's tuned ones. Once that was fixed, the real `lower` pose changed, which changed the real grasp geometry — the -12° target now hit a hard stop around -7° and stalled out the 15s `goal_time_tolerance` watchdog on every `PickStick` attempt, confirmed on hardware (`ABORTED` after ~17s, stick never lifted). **Re-tuned under the now-correct pose**, same empty-vs-holding methodology, at smaller commanded magnitudes (the useful signal only shows up past ~-8°, since at -6/-7° the jaws haven't reached the stick yet): `gripper_grasp_position_deg: -9.0` (unchanged since), `gap_threshold: 0.0244` rad (~1.4°) from just 2 calibration samples per condition. **Third pass, same day**: real `PickStick` runs then produced a much wider spread than 2 samples suggested — holding gaps of 1.09/1.35/2.14/2.23° (all real, visually-confirmed grasps) vs. empty gaps of 0.21/0.30/0.39° (real empty-jaws `PickStick` attempts plus `tune_grasp`). The empty cluster turned out tight and consistent; 1.4° was cutting into the low end of real holding attempts and false-negativing genuine grasps. Lowered to `0.0157` rad (~0.9°) — ~0.5° above the empty cluster's worst case, ~0.19° below the lowest real holding gap seen. Set consistently in `pick_and_place.yaml` and the code fallback default in all three nodes. **Re-run `tune_grasp` (several times each condition, not just once — real-world spread is larger than a single sample suggests) any time `steps.lower` or the stick geometry changes — this value is pose-dependent, not just gripper-dependent.** | — |
 | D5 | KDL is the only IK plugin available and is a poor fit for a 5-DOF chain. | See §9 — drives a real architectural decision. |
 | D6 | The demo assumes exactly one stick and one place pose; there is no notion of a build plan, of placed sticks as obstacles, or of resuming an interrupted build. | The entire Phase 3–5 work. |
 | D7 | No e-stop / "hold still, human's hands are in the workspace" state. | Safety — see §12. |
+| D8 | ✅ **Fixed 2026-08-02.** `attach_collision_object()` attaches the "stick" box at whatever pose it currently has in the world scene (confirmed by reading `pymoveit2`'s source: it sends an `AttachedCollisionObject` with only an `id`, no shape/pose), and `plan_grasp_gripper()` (pre-existing, predates Phase 2) used to re-add that box at the *static feeder-pose constant* immediately before attaching, not the gripper's actual current pose. This was flagged 2026-08-02 as "cosmetic only" — wrong: a second hardware run the same day showed it also breaks `ReleaseStick`'s `retreat` planning. Mechanism: `detach_collision_object()` doesn't delete "stick", it returns it to the *world* at the pose implied by the (wrong) attach-time offset carried through the whole pick→place joint move — landing it somewhere between the feeder and the base, overlapping the just-placed `placed_<id>` box and blocking `retreat`'s plan. Fixed two ways in `sequences.py`: (1) `run_pick_sequence`'s `plan_grasp_gripper()` now re-adds "stick" at `motion.get_current_ee_pose()` (the same FK-based technique already proven correct for `register_placed_stick`) instead of the static config constant, so the attach offset is accurate from the start; (2) `run_release_sequence` now calls `scene.remove_stick()` right after `detach_stick()` regardless, since `placed_<stick_id>` is the authoritative record of that stick from `ReleaseStick` onward and the transient proxy has no further job. | — |
+| D9 | ✅ **Fixed 2026-08-02.** `config/pick_and_place.yaml` was scoped to a specific node name (`pick_and_place_node:`), which in ROS2 a params-file only applies to a node literally named that. `stick_task_server_node.py` creates a node named `stick_task_server`, and `tune_grasp_node.py` creates `tune_grasp_node` — neither matches, so **neither node ever received this yaml's tuned values**, params-file or not; both silently ran on their own code-fallback defaults instead. This is the real explanation for the "misplaced stick" reports (D8's fix was real but secondary): `stick_task_server`'s fallback `stick.pose` was `[0.25, 0.0, 0.05]`, ~13cm off the real feeder pose `[0.379, -0.026, 0.064]` — visible from the very first `add_stick_at_feeder()` call in `PickStick`, before any grasp/attach logic runs at all. (`pick_and_place_node.py` was unaffected only because its own launch file's node name happens to match.) Fixed: the yaml's top-level key is now `/**:` (ROS2's wildcard node-name match — applies regardless of node name), plus a new `stick_task_server.launch.py` (mirroring `pick_and_place.launch.py`) so `--params-file` is wired automatically instead of relying on someone remembering the flag; `tune_grasp_node.py`'s docstring now spells out the explicit `--params-file` invocation it still needs (it must stay `ros2 run`, not `ros2 launch`, for reliable stdin). Code fallback defaults for `stick.size`/`stick.pose` (and `sequences.py`'s `lower`/`lift` step defaults, found drifted the same way) were also synced to the yaml's real values as a safety net, same pattern as D4's grasp-threshold fix. (`stick.size`/`stick.pose` were themselves replaced by `stick.base_xyz_m`/`section_m`/`default_length_m` shortly after — see D11.) | — |
+| D10 | ✅ **Fixed 2026-08-02.** `run_release_sequence`'s `open gripper at place` step called `motion.run_step(arm, ...)` instead of `motion.run_step(gripper, ...)` — planned a gripper-only trajectory via `motion.plan_gripper()`, then executed and waited on it through the **arm's** MoveIt2 interface instead of the gripper's. Confirmed on hardware 2026-08-02: `PickStick`/`PlaceStick` succeeded, `ReleaseStick` then hung for an extended period on this exact step before finally aborting with "planning/execution failed at 'open gripper at place'" — consistent with the wrong interface's `execute()`/`wait_until_executed()` never recognizing the trajectory. `run_pick_sequence`'s "open gripper" step (a few lines earlier in the same file) already passed `gripper` correctly — this was an isolated copy/paste slip in `run_release_sequence`, not a deeper pattern; fixed by passing `gripper` there too. | — |
+| D13 | **`PickStick`'s grip height along the stick is a single fixed joint target (`steps.lower.joint_positions`), tuned for one stick length (0.11m).** It does not adapt to `PickStick.length`, so a differently-sized stick would be grasped at the wrong point along its length (too low/high relative to its own center), even though `base_xyz_m` (Sec 11 Phase 4 / D11) correctly keeps the stick's *base* anchored regardless of length. User-observed 2026-08-02: grip lands noticeably lower than ideal on the current stick; retuning `steps.lower` (RViz Joints tab, same manual workflow as originally) fixes that for THIS length, but doesn't generalize. Proper fix (deferred — explicitly out of scope per the user, current priority is a full Blender-build-driven build, not per-length grasp optimization): compute the grasp height from the stick's actual length (e.g. grip at the midpoint, or as close to it as reachability allows for short sticks) via `so_arm_100_kinematics`, the same way `PlaceStick` already computes its target from a stick's real base/tip instead of a hand-tuned constant (`stick_spec.solve_stick_spec_joints`) — likely a new `solve_stick_spec_joints`-style helper for "grip point along an axis-aligned stick at a known base," not yet written. | Deferred — `run_pick_sequence`'s `lower` step, Sec 7.1 |
+| D12 | ✅ **Fixed 2026-08-02.** A failed grasp (motion failure, interactive abort, or verification failure) left "stick" sitting in the world scene at the gripper's current pose — `plan_grasp_gripper()` re-adds it there unconditionally so a *successful* verification can attach it, but on failure nothing removed it again. Since the robot's CURRENT state now overlapped that collision object, MoveIt refused to plan ANY next move from it (not just retreat/home specifically) — confirmed on hardware: had to manually remove the collision object via RViz before the arm could even be driven back to home after a failed `PickStick`. Fixed by calling `scene.remove_stick(arm)` on all three grasp-step failure exits in `run_pick_sequence` (motion failure, interactive-abort, and the task server's hard-fail path) — same reasoning as D8's `run_release_sequence` fix, applied to the symmetric failure case. Considered but rejected: re-adding "stick" at a different (e.g. static feeder) pose instead of removing it — doesn't help, since the robot's current joint state still geometrically overlaps that location regardless of which pose the object claims, so it would still block planning from the current state either way. Also fixed in the same pass: `StickTaskServer._execute_pick` was reporting `gripper_gap: 0.0` on every failure (hardcoded, not measured) — now always reports the real measured gap, so a future "verification failed" result actually shows how close it was, instead of throwing that number away. | — |
+| D11 | ✅ **Added 2026-08-02** (feature request, not a bug). The fed stick's config used a box-center pose plus a fixed length — a longer or shorter stick would land off-position unless the pose constant was retuned per stick. Replaced `stick.pose`/`stick.size` with `stick.base_xyz_m` (the stick's physical BASE at the feeder hole, same convention as `StickSpec.base`/`PlaceStick`'s target) + `stick.section_m` (cross-section only) + `stick.default_length_m`; `pose_utils.feeder_stick_pose(base_xyz_m, length_m)` computes the actual box center as `base + [0,0,length/2]`, always vertical. `stick_task_server`'s `_execute_pick` now threads `PickStick.length` through to `run_pick_sequence` as the real per-goal length (previously ignored entirely), and `_execute_release` remembers that length (already tracked in `TaskState.current_stick_length_m`) to size `placed_<stick_id>` correctly. `pick_and_place_node.py`/`tune_grasp_node.py` (no per-goal length available) use `default_length_m`. | — |
 
 ---
 
@@ -904,7 +918,7 @@ built", which the user needs **before** designing a sculpture (§9.5).
   placement that fails may succeed with base/tip flipped. Not yet wired into
   an automatic retry anywhere; callers must do it themselves for now.
 
-### Phase 2 — Refactor without behaviour change — 🟢 SOFTWARE DONE 2026-08-01, awaiting hardware
+### Phase 2 — Refactor without behaviour change — ✅ DONE 2026-08-01 (hardware-confirmed)
 - [x] ✅ Split `pick_and_place_node.py` into `motion.py` (`MotionController`:
       the `MoveIt2`/`MoveIt2Gripper` wrapper, the executor thread, step
       primitives, preview publisher, prompt, `run_step`), `scene.py`
@@ -930,9 +944,9 @@ built", which the user needs **before** designing a sculpture (§9.5).
   publishing the tuned `home` pose is what unblocked this dry run; it is
   not part of the shipped code.
 - **Done when:** a full interactive run **on hardware** is indistinguishable
-  from before the refactor — not yet done, needs the user present.
+  from before the refactor — ✅ confirmed on hardware 2026-08-01.
 
-### Phase 3 — Parametric place — 🟢 SOFTWARE DONE 2026-08-01, awaiting hardware
+### Phase 3 — Parametric place — ✅ DONE 2026-08-01 (hardware-confirmed)
 - [x] ✅ New `stick_spec.py`: `solve_stick_spec_joints(base_xyz_m, tip_xyz_m,
       roll_deg)` — wraps `so_arm_100_kinematics.solve_stick_orientation`
       (never reimplements it), adds the base/tip flip-retry §9.6 calls for
@@ -962,39 +976,223 @@ built", which the user needs **before** designing a sculpture (§9.5).
     (same fake-`/joint_states` harness as Phase 2's dry run) — MoveIt
     accepted the computed target as a valid, collision-checked joint goal.
 - **Done when:** placing via a `StickSpec` lands in the same spot as today's
-  hand-tuned `place` pose, verified **on hardware** — not yet done, needs
-  the user present. Suggested order: (1) reproduce the tuned pose via
-  `stick_spec` (config comment in `pick_and_place.yaml` has the exact
-  values) and confirm it lands the same as today's demo; (2) place `s_004`
-  from the real build file — the first stick placed at a computed, not
-  hand-tuned, location.
+  hand-tuned `place` pose, verified **on hardware** — ✅ confirmed 2026-08-01,
+  including the actual milestone: `s_004` from the real Blender-exported
+  build file placed at a computed, not hand-tuned, location for the first
+  time.
 
-### Phase 4 — Task server
-- [ ] New `so_arm_100_stick_msgs` with the actions/services in §5.1.
-- [ ] `stick_task_server_node.py`: the state machine in §6, the three
-      sequences in §7, `TaskState` publishing, planning-scene bookkeeping
-      (§10).
+### Phase 4 — Task server — ✅ DONE, hardware-confirmed 2026-08-02
+- [x] ✅ New `so_arm_100_stick_msgs` (`ament_cmake` interface package):
+      `msg/StickSpec.msg`, `msg/TaskState.msg`,
+      `action/{PickStick,PlaceStick,ReleaseStick}.action`, matching §5.1/§6/§7
+      exactly. Verified with `ros2 interface show`.
+- [x] ✅ `stick_task_server_node.py`: the state machine in §6 (`IDLE` /
+      `PICKING` / `HOLDING` / `PLACING` / `AT_PLACE` / `ERROR`), all three
+      actions, `TaskState` published latched on `/stick_task/state`.
+      `sequences.py` split `run_full_demo` into `run_pick_sequence` /
+      `run_place_sequence` / `run_release_sequence` (return `(success,
+      message)`, never call `motion.shutdown()`) so the server and the
+      standalone demo share one implementation — `run_full_demo` is now a
+      thin wrapper applying the demo's own shutdown-on-failure behaviour on
+      top. `scene.register_placed_stick` adds the permanent
+      `placed_<stick_id>` box (§10) on `ReleaseStick`.
+      ⚠ **Scoped deliberately smaller than the full checklist below**:
+      `PlaceStick` reuses Phase 3's single joint-move `place` (no distinct
+      approach+insert cartesian path, §7.2 steps 3-4); no
+      `Abort`/`Reset`/`GoToNamed`/`SetBuildPlan`; `ERROR` currently has no
+      recovery action, so it needs a node restart. All deferred to a
+      follow-up, not oversights.
 - [ ] `ValidatePlacements` — batch check returning per-stick reachable/reason.
       ⚠ **Must be order-aware** (§10.1): validate by simulating the build in
       order, since a placement that is reachable in an empty scene can become
-      unreachable once its neighbours exist.
+      unreachable once its neighbours exist. **Deferred** — the wire
+      `StickSpec` has no `supports`/`shared_ends` topology (only the
+      build-file format does), so a principled same-joint-neighbour
+      exclusion needs Phase 5's build-file loader anyway.
 - [ ] **Tell the human which stick to load** (Q1): every `PickStick` result
       and `TaskState` carries the next stick's id and length, and the node
-      logs it prominently.
+      logs it prominently. Partially there (`TaskState`/`PickStick.Result`
+      already carry the current stick's id/length) — the "next" part needs
+      Phase 5's build-order loop to have anything to look ahead into.
+- **Verified so far (no hardware)**: rejection is correct (`PlaceStick`
+  while `IDLE`, etc. → clean rejection, `TaskState` untouched); feedback
+  publishes per-step; a real `PickStick` plans and correctly fails at
+  execution (no controller in this harness) with a clean `ERROR`
+  transition and an accurate message. Sequence functions unit-tested with
+  stub `motion` objects: return `(bool, str)`, never call `shutdown()`,
+  correctly branch on `motion.interactive` for the grasp-verification
+  override. `pick_and_place_node`'s interactive demo re-run twice in
+  skip-mode — fully passes (accounting for OMPL's own planner
+  non-determinism between runs, the same flakiness already known from
+  Phase 2/3 testing) — Phase 2's zero-behaviour-change guarantee holds
+  after the `sequences.py` split.
+  ⚠ **Found AND fixed 2026-08-02: the task server wedged permanently after
+  the first goal that involved real motion**, confirmed on the user's real
+  hardware (not just the dry-run harness) — every subsequent action goal on
+  ANY of the node's actions hung forever, no exception logged. **Root
+  cause, confirmed via a ROS2 core maintainer's own analysis on a matching
+  upstream issue** ([ros2/ros2#1609](https://github.com/ros2/ros2/issues/1609)):
+  `rclpy.spin_once()`/`spin_until_future_complete()` — which `pymoveit2`
+  calls internally, in a loop, inside `plan()`/`wait_until_executed()` (see
+  `motion.py`) — silently detaches the `Node` from the `Executor` that owns
+  it when called *from within a callback that same Executor is already
+  dispatching*. An `ActionServer`'s `execute_callback` runs on exactly such
+  a thread, so any pymoveit2 call inside one is affected; every earlier dry
+  run in this project avoided this specific case only because the
+  interactive demo's **skip** option meant `execute()` was never actually
+  called for real until the task server (§6: the action boundary *is* the
+  gate now, no skip).
+  **Fix: two separate `rclpy.Node`s** (`stick_task_server_motion` for
+  `pymoveit2`, `stick_task_server` for the `ActionServer`s/`TaskState`),
+  each with its own `Executor` — so whatever the nested `spin_once()` calls
+  do to the motion node's executor association, the action node's executor
+  is never affected and keeps accepting new goals. See
+  `stick_task_server_node.py`'s own module docstring for the full
+  explanation. Confirmed fixed in the dry-run harness: a second action's
+  goal was accepted and correctly serviced while a first, unrelated
+  in-flight call was still pending — the previous total-unresponsiveness
+  symptom is gone.
+  ⚠ **New, separate, lower-severity observation from the same retest**: in
+  the no-controller dry-run harness, one specific `PickStick` call's
+  `home position` planning step itself hung indefinitely (never resolved,
+  though the server stayed responsive to other goals throughout). Not yet
+  understood — may be a distinct, more localized instance of the same
+  underlying `spin_once` fragility, or an artifact of this synthetic
+  no-controller harness specifically. **Needs re-confirmation on real
+  hardware** now that the two-node fix is in place.
 - **Done when:** an entire pick→place→release cycle runs from three
-  `ros2 action send_goal` invocations, with no Blender involved.
+  `ros2 action send_goal` invocations, with no Blender involved — ✅
+  **confirmed on real hardware 2026-08-02**: `PickStick`/`PlaceStick`/
+  `ReleaseStick` all `SUCCEEDED` for `s_004`, picked, placed at its
+  computed location, released. Getting here also surfaced and fixed D9
+  (params-file node-name scoping), D10 (arm/gripper interface mixup in
+  `ReleaseStick`), D12 (stale collision object blocking recovery after a
+  failed grasp), and two rounds of grasp-threshold re-tuning (D4) once
+  real hardware variance turned out wider than the first calibration pass
+  — see §4 for all of these. D13 (grasp height not adapting to stick
+  length) is a known, deliberately deferred gap, not a blocker for this
+  phase's own done-when. The narrower dry-run-only `home position` hang
+  noted below is still unconfirmed on hardware either way (not hit in the
+  successful run above, but not specifically retested for either).
 
-### Phase 5 — Build execution & robustness
-- [ ] Load a build file (see [`BRIDGE_PROTOCOL.md`](BRIDGE_PROTOCOL.md) Part A)
-      and execute it stick by stick, with the human gates.
-- [ ] Persist per-stick status; resume after restart by rebuilding the
-      planning scene from placed sticks (§10).
-- [ ] Failure handling: a stick that fails IK or execution is marked and
-      skipped, not fatal to the build.
-- [ ] Retry / re-pick after a failed grasp verification.
+### Phase 5 — Build execution & robustness — 🟢 SOFTWARE DONE 2026-08-03, awaiting hardware
+- [x] ✅ **New `Reset` action** (`so_arm_100_stick_msgs`), the only way back
+      from `ERROR` to `IDLE`. Discovered during planning, not originally
+      asked for: without it, a single failure anywhere in a multi-stick
+      build would permanently reject every subsequent action for the rest
+      of the run, not just fail that one stick -- making it a hard
+      prerequisite for this phase's own "not fatal to the build" item, not
+      an optional nice-to-have. `assume_gripper_empty` flag mirrors
+      `BRIDGE_PROTOCOL.md` §5.11's already-designed (until now
+      unimplemented) socket `reset` command exactly.
+- [x] ✅ **New `build_file.py`** -- pure-Python build-file/status-sidecar
+      loader, a compatible counterpart to the Blender addon's own
+      `so100_builder/io/build_file.py` (ported behavior: `status_path_for`,
+      `status_document`/`load_status_file`'s pending-omission and
+      unknown-status-degrades-to-pending rules, `next_stick_to_load`'s
+      never-skip-a-failure rule), plus the two checks the protocol assigns
+      specifically to this side: `kinematics_version` must equal
+      `so_arm_100_kinematics.__version__` exactly (hard error, not a
+      warning) and `frame` must be `base_link`. 17 unit tests
+      (`test/test_build_file.py`).
+- [x] ✅ **New `pose_utils.axis_aligned_box_pose()`** -- general
+      base/tip-to-box-pose quaternion math, needed only for resume (no live
+      FK exists for a stick placed in a previous run). Verified against
+      four cases (straight up, straight down, sideways, an arbitrary real
+      stick vector) by rotating +Z through the returned quaternion and
+      checking it lands on the expected base->tip direction.
+- [x] ✅ **New `build_runner_node.py`** (console script `build_runner`) --
+      Sec A.4's execution loop, as an `ActionClient` of `stick_task_server`
+      (a separate process, not a change to the task server). Loads the
+      build file and (if present) its status sidecar, re-registers every
+      already-`placed` stick's collision box on resume (Sec A.5), then
+      loops stick by stick with the human gates (load -> `PickStick` ->
+      place -> `PlaceStick` -> glue -> `ReleaseStick`), writing the sidecar
+      after every finalized stick. A failure at any of the three actions
+      offers retry/skip/abort; retry/skip both call `Reset` first (after
+      asking the human to visually confirm the gripper state). Simpler
+      than `stick_task_server_node.py`: never calls `pymoveit2`'s blocking
+      `plan()`/`execute()`/`wait_until_executed()`, so it does not need
+      that node's two-`Node`/two-`Executor` wedge workaround (finding #12)
+      -- see the module's own docstring for the full reasoning. Failure
+      handling and retry/re-pick (this phase's other two checklist items)
+      both fall out of this same loop.
+- [x] ✅ **Verified in the no-controller dry-run harness** (same
+      fake-`/joint_states` + `move_group`-only harness as every earlier
+      phase), with a synthetic 2-stick build file: fresh-start run
+      exercises the failure -> `Reset` -> retry/skip/abort path end to end
+      (every real `execute()` aborts in this harness, so this is the ONLY
+      path reachable without hardware) and finishes with a correct sidecar;
+      a second run with a hand-written sidecar marking stick 1 `placed`
+      resumes correctly at stick 2 -- confirmed via
+      `ros2 service call /get_planning_scene` that `placed_s_test_1`'s
+      collision box lands at the right position/size/orientation, not just
+      via log messages.
 - [ ] *(Only if the live-bridge option is chosen — §5.2)* implement
       `so_arm_100_blender_bridge` per the protocol doc, including its
-      `--mock` mode.
+      `--mock` mode. Still dormant by decision (Option C), unchanged.
+- [x] ✅ **Three real bugs found and fixed from actual hardware attempts**
+      (2026-08-03/04, on a freshly-generated build file, kinematics_version
+      already correct thanks to the Blender-side re-vendor): a `ReleaseStick`
+      failure right after a successful placement left a physically-glued
+      stick with no collision box and no recovery path (finding #17); a
+      restarted `build_runner` didn't clear collision debris a previous
+      crashed run left in `move_group` (finding #18); and the array-position
+      resume loop re-attempted `PickStick`/`PlaceStick` on a stick already
+      `placed` from an earlier session, driving a second physical stick
+      straight at that stick's own already-registered collision box --
+      confirmed via an RViz screenshot showing the already-placed stick
+      sitting exactly where the newly-picked one was being planned to go
+      (finding #19). All three fixed in `build_runner_node.py`; see findings
+      #17/#18/#19. **Not yet re-verified on hardware** -- these fixes are
+      code-reviewed and pass the existing dry-run-covered unit tests, but
+      the specific failure sequences that surfaced them haven't been re-run
+      against real hardware yet.
+- [x] ✅ **`build_runner`'s `fresh_start` param** (`-p fresh_start:=true`,
+      default `false`) -- a user closing every terminal and rebuilding, then
+      seeing `build_runner` correctly resume from the status sidecar
+      (`<build_file>.status.json`, which lives on disk independent of any
+      process), read that as unwanted caching rather than the intended
+      checkpoint feature (Sec A.3/A.5). The resume behavior itself was
+      correct and is unchanged; `fresh_start` just gives an explicit,
+      documented way to discard the sidecar and start over instead of
+      needing to `rm` it by hand.
+- [x] ✅ **`motion.py`'s `explain_collision()`** -- a planning failure
+      (`INVALID_MOTION_PLAN` and friends) previously only logged the bare
+      MoveIt error code, leaving the operator to dig through RViz or
+      `ros2 service call /get_planning_scene` to find out why (exactly what
+      happened diagnosing finding #19). Now, on any `"joint"`/`"stick_spec"`
+      planning failure, `plan_arm_step` calls MoveIt's own
+      `check_state_validity` service against the computed goal joint
+      configuration and, if that goal state is itself in collision, logs
+      which two collision bodies are touching (e.g. `'stick' vs
+      'placed_s_005'`) directly in the terminal. Best-effort and
+      diagnostic-only by design: any failure inside it (service unavailable,
+      timeout, or the goal simply being reachable-but-unplannable for a
+      non-collision reason) is caught and silently yields no hint, never a
+      new failure mode.
+- **Done when:** a build file runs end to end on real hardware with the
+  above three bug fixes in place: every stick picked, placed, released,
+  sidecar shows all `placed` (or a deliberate, correctly-recorded
+  `skipped`/`failed` with the scene left in a state matching physical
+  reality). 🟡 **Not yet achieved** -- multiple real attempts made, none
+  completed clean; the bugs found along the way are fixed but not yet
+  re-verified against hardware. A separate, unresolved observation from the
+  same attempts: `PlaceStick`'s trajectory for one stick looked visually
+  wrong (dipped toward the floor before lifting into place) despite
+  succeeding -- not yet root-caused, see the note below.
+
+**Note — unconfirmed trajectory-shape observation (2026-08-04):** one
+`PlaceStick` run visually dipped down before lifting into its final pose,
+though it still succeeded. `plan_arm_step`'s `"stick_spec"`/`"joint"` modes
+plan an OMPL joint-space goal with an unconstrained Cartesian path in
+between (finding #11's own tradeoff: joint-space is the reliable choice
+specifically *because* the path shape is not constrained) -- a downward dip
+is a plausible, if inelegant, valid solution under that mode, not
+necessarily a bug. Not root-caused; needs either a repeat with the
+`display_planned_path` preview watched live, or actual joint-trajectory
+logs, before deciding whether this needs a fix or is just OMPL's normal
+solution variance.
 
 ### Phase 6 — Rotating table *(future)*
 - [ ] Make `build_table` a revolute joint (either a 6th controlled servo, or

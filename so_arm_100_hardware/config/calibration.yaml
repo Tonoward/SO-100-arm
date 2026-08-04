@@ -121,7 +121,7 @@ joints:
     integral_gain: 0.1    # confirmed working live via ros2 param set
 
   Gripper:
-    zero_ticks: 1803
+    zero_ticks: 1790
     direction: 1
     gravity_coefficient: 0.0
     integral_gain: 0.1    # confirmed working live via ros2 param set

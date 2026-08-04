@@ -1,12 +1,11 @@
-"""Collision-object lifecycle for the fed stick -- the one persistent scene
-object so_arm_100_pick_and_place manages today.
+"""Collision-object lifecycle: the transient fed stick (`STICK_ID`,
+Sec 11 Phase 2) plus, as of Phase 4, permanent per-stick boxes for the
+sculpture as it's built (`register_placed_stick`, Sec 10).
 
-Extracted from pick_and_place_node.py (ROS2_IMPLEMENTATION_PLAN.md Sec 11
-Phase 2), no behaviour change. Deliberately kept to plain functions over an
-`arm` (a `motion.MotionController.arm`, i.e. a `pymoveit2.MoveIt2`) rather
-than hardcoding "the stick" as singular state, so Sec 10's future extension
--- one persistent collision box per PLACED stick, not just the one still in
-the feeder -- is additive later, not a rewrite.
+Deliberately kept to plain functions over an `arm` (a
+`motion.MotionController.arm`, i.e. a `pymoveit2.MoveIt2`) rather than
+hardcoding "the stick" as singular state -- this is exactly why
+`register_placed_stick` was additive here, not a rewrite.
 """
 
 STICK_ID = "stick"
@@ -25,8 +24,15 @@ def remove_stick(arm):
     arm.remove_collision_object(id=STICK_ID)
 
 
-def re_add_stick(arm, size, position, quat_xyzw, frame_id):
-    add_stick_at_feeder(arm, size, position, quat_xyzw, frame_id)
+def register_placed_stick(arm, stick_id, size, position, quat_xyzw, frame_id):
+    """Add a PERMANENT collision box for a stick that has just been
+    released (Sec 10 / Sec 11 Phase 4's ReleaseStick): the sculpture is an
+    obstacle field the arm must plan around from here on, so this is never
+    removed. `id` is `placed_<stick_id>`, distinct from the transient
+    feeder-stick `STICK_ID` -- each call adds one more permanent box, it
+    never overwrites a previous one."""
+    arm.add_collision_box(
+        id=f"placed_{stick_id}", size=size, position=position, quat_xyzw=quat_xyzw, frame_id=frame_id)
 
 
 def attach_stick(arm, logger=None):

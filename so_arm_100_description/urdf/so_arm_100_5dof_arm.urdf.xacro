@@ -417,7 +417,21 @@ For more information, please see http://wiki.ros.org/sw_urdf_exporter
       link="${prefix}Moving_Jaw" />
     <axis
       xyz="0 0 1" />
-    <limit effort="1000" lower="-0.1792" upper="1.5708" velocity="5.0"/>
+    <!-- lower widened 2026-08-02 (-0.1792 to -0.24 rad, ~-13.75deg): -12deg
+         grasp closes are already hardware-proven, and -0.1792 (~-10.27deg)
+         was blocking tune_grasp from testing -11/-12/-13deg at all. Kept a
+         deliberately small ~0.75deg margin past -13deg, not a big jump.
+         This IS the real bound for real hardware: pickandplace_demo.launch.py
+         and hardware.launch.py both build robot_description from
+         so_arm_100_moveit_config/config/so_arm_100.urdf.xacro (which
+         includes this file), whose own ros2_control.xacro declares no
+         min/max at all for any joint, so MoveIt/OMPL's use of this <limit>
+         is the only enforced bound. so_arm_100_description's own
+         ros2_control.xacro (a separate file, also has a Gripper min, kept
+         in sync here) is NOT part of that chain, it's only reachable via
+         so_arm_100_5dof.urdf.xacro, the description package's standalone
+         display/demo entry point, unused by real hardware runs today. -->
+    <limit effort="1000" lower="-0.24" upper="1.5708" velocity="5.0"/>
     <dynamics damping="0.1"/>
   </joint>
 

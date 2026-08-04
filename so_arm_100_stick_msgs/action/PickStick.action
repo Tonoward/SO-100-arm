@@ -1,0 +1,14 @@
+# ROS2_IMPLEMENTATION_PLAN.md Sec 7.1. Requires state IDLE; ends in HOLDING
+# on success (or ERROR on failure -- see the state machine in Sec 6).
+
+string stick_id
+float64 length
+string source   # feeder to pick from; server defaults empty to "feeder_0"
+---
+bool success
+string message
+float64 gripper_gap   # measured grasp-verification gap (Sec 3 finding on grasp_verification)
+---
+string step
+uint8 step_index
+uint8 step_count

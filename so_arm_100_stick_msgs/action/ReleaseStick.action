@@ -1,0 +1,13 @@
+# ROS2_IMPLEMENTATION_PLAN.md Sec 7.3. Requires state AT_PLACE; ends in
+# IDLE on success. Registers the stick as a permanent collision object
+# (id "placed_<stick_id>") at its current pose -- Sec 10: the sculpture is
+# an obstacle field the arm must plan around from here on.
+
+string stick_id
+---
+bool success
+string message
+---
+string step
+uint8 step_index
+uint8 step_count
