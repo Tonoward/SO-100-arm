@@ -252,10 +252,17 @@ def run_place_sequence(motion, stick_spec, feedback_cb=None):
 
 
 def run_release_sequence(motion, stick_id, size, frame_id, grasp_cfg, retreat_step_cfg, feedback_cb=None):
-    """Sec 7.3: open the gripper, detach the held stick, register it as a
-    PERMANENT collision object `placed_<stick_id>` at its current pose
-    (Sec 10 -- the sculpture is an obstacle field from here on), then
-    retreat. Ends IDLE.
+    """Sec 7.3: open the gripper, detach the held stick, retreat, THEN
+    register it as a PERMANENT collision object `placed_<stick_id>` at its
+    pre-retreat pose (Sec 10 -- the sculpture is an obstacle field from here
+    on). Ends IDLE.
+
+    ⚠ Registration happens AFTER retreat, not before -- see the inline
+    comment above the retreat step for why registering first makes the
+    retreat itself unplannable (the box is necessarily co-located with the
+    gripper's pre-retreat pose). The pose/size used is still captured right
+    after opening the gripper, same moment as always -- only the ACTUAL
+    scene.register_placed_stick() call is deferred.
 
     `size`: the collision-box size to register the placed stick under --
     this phase's PickStick/ReleaseStick actions don't yet round-trip a full
@@ -290,12 +297,38 @@ def run_release_sequence(motion, stick_id, size, frame_id, grasp_cfg, retreat_st
     if current_pose is None:
         return False, "could not compute the current end-effector pose -- placed stick not registered"
     pos, quat = current_pose
-    _tick(feedback_cb, "register placed stick", 1, step_count)
-    scene.register_placed_stick(arm, stick_id, size, pos, quat, frame_id)
 
-    _tick(feedback_cb, "retreat", 2, step_count)
+    # Retreat BEFORE registering the permanent placed_<id> box, not after --
+    # that box sits at this exact just-captured pose (by design, so it
+    # accurately reflects where the stick physically ended up), which is
+    # necessarily co-located with the gripper's CURRENT pose (it was just
+    # holding the stick there). Registering it first, then immediately
+    # planning 'retreat' FROM that same pose, starts the plan from a state
+    # already overlapping an obstacle this step itself just created -- an
+    # unplannable start regardless of path shape, not real protection (it
+    # can only guarantee failure, never usefully block a bad path) -- the
+    # identical 'retreat' failure the "stick" stray-object fix above already
+    # solved once, resurfacing here under a new id. Confirmed on hardware
+    # 2026-08-04. Deferring registration until after a clear retreat
+    # sidesteps it without changing the box's pose accuracy at all: pos/quat
+    # above is still captured at the same moment as before, just applied
+    # after the arm has moved away. Every OTHER already-placed stick's box
+    # stays present throughout -- only this stick's own box, which could
+    # never protect anything during its own retreat, is deferred.
+    _tick(feedback_cb, "retreat", 1, step_count)
     if not motion.run_step(arm, "retreat", lambda: motion.plan_arm_step(retreat_step_cfg)):
+        # Register even on a retreat failure: by this point the physical
+        # release (gripper opened, Sec 7.3's own job) already happened --
+        # only the arm's OWN subsequent move can fail from here on, not the
+        # stick's placement -- so the scene should reflect that stick as
+        # placed regardless of whether retreat itself succeeds, instead of
+        # depending on the operator noticing and saying so via
+        # build_runner's prompt_stick_physically_placed().
+        scene.register_placed_stick(arm, stick_id, size, pos, quat, frame_id)
         return False, "planning/execution failed at 'retreat'"
+
+    _tick(feedback_cb, "register placed stick", 2, step_count)
+    scene.register_placed_stick(arm, stick_id, size, pos, quat, frame_id)
 
     return True, "released, idle"
 

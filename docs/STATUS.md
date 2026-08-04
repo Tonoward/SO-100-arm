@@ -163,14 +163,17 @@ Format: `[owning side]` short description — pointer.
   RViz/`move_group` did). A third run's `INVALID_MOTION_PLAN` was root-
   caused via an RViz screenshot: the resume loop had re-attempted a stick
   already `placed` from an earlier session, driving a second physical stick
-  straight at that stick's own already-registered collision box. All three
-  bugs diagnosed and fixed (see Resolved below,
-  `ROS2_IMPLEMENTATION_PLAN.md` §3 findings #17/#18/#19). Not yet
-  re-verified against hardware. Separately, one `PlaceStick` run had a
-  visually odd trajectory (dipped toward the floor before lifting into
-  place) despite succeeding — not yet root-caused, plausibly just OMPL's
-  normal joint-space path variance (finding #11's tradeoff); see
-  `ROS2_IMPLEMENTATION_PLAN.md` §11 Phase 5's note.
+  straight at that stick's own already-registered collision box. A fourth
+  run (fresh sidecar deleted, clean start) got further — pick, place, and
+  glue all succeeded for the first stick — but `ReleaseStick` then failed at
+  its own `retreat` step with no other collision objects present besides
+  that stick's own about-to-be-registered box. All four bugs diagnosed and
+  fixed (see Resolved below, `ROS2_IMPLEMENTATION_PLAN.md` §3 findings
+  #17/#18/#19/#20). Not yet re-verified against hardware. Separately, one
+  `PlaceStick` run had a visually odd trajectory (dipped toward the floor
+  before lifting into place) despite succeeding — not yet root-caused,
+  plausibly just OMPL's normal joint-space path variance (finding #11's
+  tradeoff); see `ROS2_IMPLEMENTATION_PLAN.md` §11 Phase 5's note.
 
 ## Resolved
 
@@ -188,7 +191,7 @@ Format: `[owning side]` short description — pointer.
   which two collision bodies are actually touching (e.g. `'stick' vs
   'placed_s_005'`) directly in the terminal; best-effort, never raises.
   `ROS2_IMPLEMENTATION_PLAN.md` §11 Phase 5.
-- `[ROS2]` Three real bugs found and fixed from actual Phase 5 hardware
+- `[ROS2]` Four real bugs found and fixed from actual Phase 5 hardware
   attempts 2026-08-03/04 (see the Open item above for what surfaced them):
   (1) `register_placed_stick` only runs partway through
   `run_release_sequence`, so a `ReleaseStick` failure at its first step
@@ -207,8 +210,16 @@ Format: `[owning side]` short description — pointer.
   from an earlier session, driving a second physical stick straight at that
   stick's own already-registered collision box — root-caused via an RViz
   screenshot, fixed by an explicit already-`placed` guard at the top of
-  each loop iteration. `ROS2_IMPLEMENTATION_PLAN.md` §3 findings
-  #17/#18/#19. Not yet re-verified against hardware.
+  each loop iteration. (4) `run_release_sequence` registered the just-placed
+  stick's permanent collision box BEFORE attempting `retreat`, at a pose
+  necessarily co-located with the gripper's pre-retreat position — the
+  identical "obstacle sitting on the arm's own current pose" bug already
+  fixed once for the `"stick"` transient object, resurfacing under the
+  permanent box's name — fixed by reordering to retreat first, register
+  second (same pose data, applied later; also now registers even if
+  retreat itself still fails, since the physical release already happened
+  by that point). `ROS2_IMPLEMENTATION_PLAN.md` §3 findings
+  #17/#18/#19/#20. Not yet re-verified against hardware.
 - `[Blender]` `so_arm_100_kinematics` re-vendored into
   `so100_builder/kinematics/` 2026-08-03 — was stuck at 1.1.0 without
   `jaw_clearance.py` at all, now matches 1.2.0 exactly (copied verbatim per

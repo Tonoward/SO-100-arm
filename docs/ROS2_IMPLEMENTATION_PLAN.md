@@ -190,6 +190,7 @@ undoing one of these, re-read the in-file comment first.
 | 17 | **`register_placed_stick` only runs partway through `run_release_sequence`** (after its 'open gripper at place' step, before 'retreat' -- Sec 7.3), so a `ReleaseStick` failure at that first step leaves a stick that is physically already placed *and glued by the operator* completely unknown to the planning scene, with no code path to recover it. Found 2026-08-03/04 on real hardware: a stick was skipped after a release failure, its collision box never existed, and a later placement in the same run failed -- plausibly (not certain) because the arm planned through where that un-modelled stick physically sat. **`build_runner` cannot infer this from the action result alone** -- only the operator, looking at the robot, knows whether the glue already happened. Fixed by adding `prompt_stick_physically_placed()`: asked before finalizing any skip/abort, it overrides the outcome to `placed` (registers the collision box from the build file's own geometry, same math as resume) whenever the operator says yes, regardless of which of the three actions failed. | `build_runner_node.py`'s `prompt_stick_physically_placed()` |
 | 18 | **MoveIt's planning scene lives in `move_group`, not in `build_runner`/`stick_task_server`** -- restarting those two processes after a crashed/aborted run does NOT clear whatever collision state they left behind (a stray transient `stick` object, or a `placed_<id>` box for a stick an old sidecar called placed but the current one doesn't). Found 2026-08-03/04: a user restarting `build_runner` after a failed run reported an unexpected leftover collision box, only cleared by also closing RViz/`move_group` -- and this is a plausible (not confirmed) explanation for a same-session `INVALID_MOTION_PLAN` on a place that should have been reachable. Fixed: `build_runner`'s `main()` now deterministically clears the transient `stick` id and any `placed_<id>` not currently marked `placed` in the sidecar, by id, before rebuilding the scene from that sidecar (Sec A.5) -- no scene query needed, since the full set of possible ids is just the build file's own stick list. **Do not assume a fresh `build_runner`/`stick_task_server` process means a fresh planning scene.** | `build_runner_node.py main()`, just before the Sec A.5 resume block |
 | 19 | **The array-position `for` loop introduced to fix the skip-infinite-loop bug (see this loop's own comment) re-attempts EVERY stick from `start_index` onward unconditionally, including one already `placed` from an earlier session's sidecar.** Confirmed on real hardware 2026-08-04: `s_005` was already `placed` (correctly re-registered as a permanent `placed_s_005` collision box by the Sec A.5 resume block), but the loop re-picked and re-attempted `PlaceStick` on it anyway -- `PlaceStick` correctly failed with `INVALID_MOTION_PLAN` because the target pose was already occupied by that stick's own already-registered box (a real collision, not a stale-scene artifact -- the RViz screenshot that surfaced this showed exactly that). **The two array-position-loop bugs are opposite failure modes of the same design tension**: calling `next_stick_to_load` on every retry re-surfaces the current stick forever (finding fixed pre-#16); blind array-position iteration re-attempts already-`placed` sticks (this finding). Fixed by adding an explicit `statuses[stick_id]["status"] == STATUS_PLACED` guard at the top of each `for` iteration, skipping (not attempting) any stick already placed when the run started -- cheap because the for loop only ever moves forward, so a stick placed *during* this same run is never revisited by construction. | `build_runner_node.py`'s `for current_index in range(...)` loop |
+| 20 | **`run_release_sequence` registered the just-placed stick's permanent `placed_<id>` collision box BEFORE attempting the `retreat` step, at a pose necessarily co-located with the gripper's current (pre-retreat) position** -- so `retreat`'s own start state was always invalid the instant that box existed, guaranteeing planning failure regardless of path shape. This is the SAME symptom the `"stick"` transient-object stray-obstacle bug (confirmed on hardware 2026-08-02, see the fix's own comment) was already fixed for, resurfacing under `placed_<id>`'s new name -- a fresh permanent box takes over the exact same "obstacle sitting on top of the arm's own current pose" role the old transient one had. Confirmed on real hardware 2026-08-04: `ReleaseStick` failed at `retreat` immediately after a successful `PlaceStick`/glue, with no other collision objects present besides the stick's own about-to-be-registered box. Fixed by reordering `run_release_sequence`: retreat first, register second -- the pos/quat used is still captured at the same moment as before (right after opening the gripper), only the actual `scene.register_placed_stick()` call moves to after a clear retreat. Also now registers even if `retreat` itself still fails for some other reason, since the physical release (gripper open) already happened by that point regardless of the arm's own subsequent move. **Moral (same one finding #15 already drew): after fixing a stray-obstacle bug once, check whether the fix's own replacement object can recreate the identical failure.** | `sequences.py`'s `run_release_sequence()` |
 
 **Debugging technique that worked repeatedly:** to read a live node's ROS log
 without asking the user to copy-paste, find it via
@@ -1131,23 +1132,29 @@ built", which the user needs **before** designing a sculpture (§9.5).
 - [ ] *(Only if the live-bridge option is chosen — §5.2)* implement
       `so_arm_100_blender_bridge` per the protocol doc, including its
       `--mock` mode. Still dormant by decision (Option C), unchanged.
-- [x] ✅ **Three real bugs found and fixed from actual hardware attempts**
+- [x] ✅ **Four real bugs found and fixed from actual hardware attempts**
       (2026-08-03/04, on a freshly-generated build file, kinematics_version
       already correct thanks to the Blender-side re-vendor): a `ReleaseStick`
       failure right after a successful placement left a physically-glued
       stick with no collision box and no recovery path (finding #17); a
       restarted `build_runner` didn't clear collision debris a previous
-      crashed run left in `move_group` (finding #18); and the array-position
+      crashed run left in `move_group` (finding #18); the array-position
       resume loop re-attempted `PickStick`/`PlaceStick` on a stick already
       `placed` from an earlier session, driving a second physical stick
       straight at that stick's own already-registered collision box --
       confirmed via an RViz screenshot showing the already-placed stick
       sitting exactly where the newly-picked one was being planned to go
-      (finding #19). All three fixed in `build_runner_node.py`; see findings
-      #17/#18/#19. **Not yet re-verified on hardware** -- these fixes are
-      code-reviewed and pass the existing dry-run-covered unit tests, but
-      the specific failure sequences that surfaced them haven't been re-run
-      against real hardware yet.
+      (finding #19); and `run_release_sequence` registered a just-placed
+      stick's permanent collision box BEFORE retreating, at a pose
+      necessarily co-located with the gripper's current position, making
+      `retreat`'s own start state unplannable by construction -- the exact
+      same failure mode already fixed once for the `"stick"` transient
+      object, resurfacing under the permanent box's name (finding #20).
+      Fixed in `build_runner_node.py`/`sequences.py`; see findings
+      #17/#18/#19/#20. **Not yet re-verified on hardware** -- these fixes
+      are code-reviewed and pass the existing dry-run-covered unit tests,
+      but the specific failure sequences that surfaced them haven't been
+      re-run against real hardware yet.
 - [x] ✅ **`build_runner`'s `fresh_start` param** (`-p fresh_start:=true`,
       default `false`) -- a user closing every terminal and rebuilding, then
       seeing `build_runner` correctly resume from the status sidecar
@@ -1172,7 +1179,7 @@ built", which the user needs **before** designing a sculpture (§9.5).
       non-collision reason) is caught and silently yields no hint, never a
       new failure mode.
 - **Done when:** a build file runs end to end on real hardware with the
-  above three bug fixes in place: every stick picked, placed, released,
+  above four bug fixes in place: every stick picked, placed, released,
   sidecar shows all `placed` (or a deliberate, correctly-recorded
   `skipped`/`failed` with the scene left in a state matching physical
   reality). 🟡 **Not yet achieved** -- multiple real attempts made, none
